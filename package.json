@@ -1,0 +1,18 @@
+{
+  "name": "property-rent-management-system",
+  "private": true,
+  "version": "0.1.0",
+  "packageManager": "npm@11.0.0",
+  "workspaces": ["apps/*"],
+  "scripts": {
+    "dev": "concurrently \"npm run dev --workspace @rms/api\" \"npm run dev --workspace @rms/web\"",
+    "build": "npm run build --workspace @rms/api && npm run build --workspace @rms/web",
+    "lint": "npm run lint --workspaces",
+    "test": "npm run test --workspaces"
+    ,"test:e2e": "playwright test"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2",
+    "@playwright/test": "^1.51.1"
+  }
+}

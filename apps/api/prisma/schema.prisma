@@ -1,0 +1,440 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+model User {
+  id                  String               @id @default(uuid()) @db.Uuid
+  email               String               @unique
+  phone               String
+  fullName            String
+  passwordHash        String
+  status              UserStatus           @default(ACTIVE)
+  themePreference     ThemePreference      @default(LIGHT)
+  emailVerifiedAt     DateTime?
+  lastLoginAt         DateTime?
+  createdAt           DateTime             @default(now())
+  updatedAt           DateTime             @updatedAt
+  auditLogs           AuditLog[]
+  activationTokens    ActivationToken[]
+  leases              LeaseAgreement[]
+  settlements         MoveOutSettlement[]
+  passwordResetTokens PasswordResetToken[]
+  payments            Payment[]
+  paymentsRecorded    Payment[]            @relation("PaymentsRecordedBy")
+  properties          Property[]
+  receiptSequences    ReceiptSequence[]
+  refreshSessions     RefreshSession[]
+  rentBills           RentBill[]
+  repairs             Repair[]
+  tenants             Tenant[]
+  units               Unit[]
+  userRoles           UserRole[]
+}
+
+model ActivationToken {
+  id        String    @id @default(uuid()) @db.Uuid
+  userId    String    @db.Uuid
+  tokenHash String
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+model RefreshSession {
+  id        String    @id @default(uuid()) @db.Uuid
+  userId    String    @db.Uuid
+  tokenHash String
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+model ReceiptSequence {
+  id        String   @id @default(uuid()) @db.Uuid
+  ownerId   String   @db.Uuid
+  year      Int
+  nextValue Int      @default(1)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  owner     User     @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+
+  @@unique([ownerId, year])
+  @@index([ownerId])
+}
+
+model PasswordResetToken {
+  id        String    @id @default(uuid()) @db.Uuid
+  userId    String    @db.Uuid
+  tokenHash String
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+model Role {
+  id          String           @id @default(uuid()) @db.Uuid
+  name        String           @unique
+  description String?
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+  permissions RolePermission[]
+  userRoles   UserRole[]
+}
+
+model Permission {
+  id          String           @id @default(uuid()) @db.Uuid
+  name        String           @unique
+  description String?
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+  roles       RolePermission[]
+}
+
+model UserRole {
+  userId    String   @db.Uuid
+  roleId    String   @db.Uuid
+  createdAt DateTime @default(now())
+  role      Role     @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([userId, roleId])
+}
+
+model RolePermission {
+  roleId       String     @db.Uuid
+  permissionId String     @db.Uuid
+  createdAt    DateTime   @default(now())
+  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+  role         Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, permissionId])
+}
+
+model Property {
+  id           String       @id @default(uuid()) @db.Uuid
+  ownerId      String       @db.Uuid
+  name         String
+  address      String
+  phone        String
+  propertyType PropertyType
+  logoPath     String?
+  isDefault    Boolean      @default(false)
+  deletedAt    DateTime?
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+  owner        User         @relation(fields: [ownerId], references: [id])
+  units        Unit[]
+
+  @@index([ownerId])
+}
+
+model Unit {
+  id             String              @id @default(uuid()) @db.Uuid
+  ownerId        String              @db.Uuid
+  propertyId     String              @db.Uuid
+  unitNo         String
+  unitType       UnitType
+  rent           Decimal             @db.Decimal(12, 2)
+  status         UnitStatus          @default(AVAILABLE)
+  unitAttributes Json
+  deletedAt      DateTime?
+  createdAt      DateTime            @default(now())
+  updatedAt      DateTime            @updatedAt
+  leases         LeaseAgreement[]
+  settlements    MoveOutSettlement[]
+  bills          RentBill[]
+  repairs        Repair[]
+  tenants        Tenant[]
+  owner          User                @relation(fields: [ownerId], references: [id])
+  property       Property            @relation(fields: [propertyId], references: [id])
+
+  @@unique([propertyId, unitNo])
+  @@index([ownerId])
+}
+
+model Tenant {
+  id             String              @id @default(uuid()) @db.Uuid
+  ownerId        String              @db.Uuid
+  unitId         String?             @db.Uuid
+  name           String
+  phone          String
+  email          String?
+  nationalId     String?
+  idDocumentPath String?
+  address        String
+  status         TenantStatus        @default(ACTIVE)
+  moveInDate     DateTime
+  moveOutDate    DateTime?
+  moveOutReason  String?
+  deletedAt      DateTime?
+  createdAt      DateTime            @default(now())
+  updatedAt      DateTime            @updatedAt
+  leases         LeaseAgreement[]
+  settlements    MoveOutSettlement[]
+  owner          User                @relation(fields: [ownerId], references: [id])
+  unit           Unit?               @relation(fields: [unitId], references: [id])
+
+  @@index([ownerId])
+  @@index([unitId, status])
+}
+
+model LeaseAgreement {
+  id              String      @id @default(uuid()) @db.Uuid
+  ownerId         String      @db.Uuid
+  tenantId        String      @db.Uuid
+  unitId          String      @db.Uuid
+  monthlyRent     Decimal     @db.Decimal(12, 2)
+  securityDeposit Decimal     @db.Decimal(12, 2)
+  depositDate     DateTime?
+  depositNote     String?
+  startDate       DateTime
+  endDate         DateTime?
+  status          LeaseStatus @default(ACTIVE)
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+  owner           User        @relation(fields: [ownerId], references: [id])
+  tenant          Tenant      @relation(fields: [tenantId], references: [id])
+  unit            Unit        @relation(fields: [unitId], references: [id])
+  bills           RentBill[]
+
+  @@index([ownerId])
+}
+
+model BillDefault {
+  id          String   @id @default(uuid()) @db.Uuid
+  ownerId     String   @unique @db.Uuid
+  electricity Decimal  @default(0) @db.Decimal(12, 2)
+  water       Decimal  @default(0) @db.Decimal(12, 2)
+  gas         Decimal  @default(0) @db.Decimal(12, 2)
+  dueDay      Int      @default(5)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([ownerId])
+}
+
+model RentBill {
+  id          String         @id @default(uuid()) @db.Uuid
+  ownerId     String         @db.Uuid
+  leaseId     String         @db.Uuid
+  unitId      String         @db.Uuid
+  billMonth   DateTime
+  houseRent   Decimal        @db.Decimal(12, 2)
+  electricity Decimal        @default(0) @db.Decimal(12, 2)
+  water       Decimal        @default(0) @db.Decimal(12, 2)
+  gas         Decimal        @default(0) @db.Decimal(12, 2)
+  otherBills  Decimal        @default(0) @db.Decimal(12, 2)
+  fine        Decimal        @default(0) @db.Decimal(12, 2)
+  discount    Decimal        @default(0) @db.Decimal(12, 2)
+  total       Decimal        @db.Decimal(12, 2)
+  paidAmount  Decimal        @default(0) @db.Decimal(12, 2)
+  dueDate     DateTime
+  status      BillStatus     @default(DUE)
+  paymentDate DateTime?
+  receiptNo   String?
+  notes       String?
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+  payments    Payment[]
+  lease       LeaseAgreement @relation(fields: [leaseId], references: [id])
+  owner       User           @relation(fields: [ownerId], references: [id])
+  unit        Unit           @relation(fields: [unitId], references: [id])
+
+  @@unique([leaseId, billMonth])
+  @@index([ownerId])
+  @@index([ownerId, status])
+  @@index([ownerId, billMonth])
+}
+
+model Payment {
+  id               String        @id @default(uuid()) @db.Uuid
+  ownerId          String        @db.Uuid
+  billId           String        @db.Uuid
+  amount           Decimal       @db.Decimal(12, 2)
+  paidOn           DateTime
+  method           PaymentMethod
+  notes            String?
+  recordedByUserId String        @db.Uuid
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+  bill             RentBill      @relation(fields: [billId], references: [id])
+  owner            User          @relation(fields: [ownerId], references: [id])
+  recordedBy       User          @relation("PaymentsRecordedBy", fields: [recordedByUserId], references: [id])
+
+  @@index([ownerId])
+}
+
+model Repair {
+  id          String       @id @default(uuid()) @db.Uuid
+  ownerId     String       @db.Uuid
+  unitId      String       @db.Uuid
+  repairDate  DateTime
+  category    String
+  description String
+  cost        Decimal      @db.Decimal(12, 2)
+  paidBy      RepairPaidBy
+  status      RepairStatus @default(OPEN)
+  vendorName  String?
+  vendorPhone String?
+  invoiceNo   String?
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+  owner       User         @relation(fields: [ownerId], references: [id])
+  unit        Unit         @relation(fields: [unitId], references: [id])
+
+  @@index([ownerId])
+}
+
+model MoveOutSettlement {
+  id              String           @id @default(uuid()) @db.Uuid
+  ownerId         String           @db.Uuid
+  tenantId        String           @db.Uuid
+  unitId          String           @db.Uuid
+  moveOutDate     DateTime
+  unpaidDue       Decimal          @db.Decimal(12, 2)
+  securityDeposit Decimal          @db.Decimal(12, 2)
+  refundAmount    Decimal          @default(0) @db.Decimal(12, 2)
+  payableAmount   Decimal          @default(0) @db.Decimal(12, 2)
+  result          SettlementResult
+  reason          String?
+  settledAt       DateTime?
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+  owner           User             @relation(fields: [ownerId], references: [id])
+  tenant          Tenant           @relation(fields: [tenantId], references: [id])
+  unit            Unit             @relation(fields: [unitId], references: [id])
+
+  @@index([ownerId])
+}
+
+model AuditLog {
+  id          String      @id @default(uuid()) @db.Uuid
+  ownerId     String?     @db.Uuid
+  actorUserId String      @db.Uuid
+  action      AuditAction
+  details     Json
+  createdAt   DateTime    @default(now())
+  actor       User        @relation(fields: [actorUserId], references: [id])
+
+  @@index([ownerId])
+}
+
+enum UserStatus {
+  ACTIVE
+  DISABLED
+  SUSPENDED
+}
+
+enum ThemePreference {
+  LIGHT
+  DARK
+}
+
+enum PropertyType {
+  RESIDENTIAL
+  COMMERCIAL
+}
+
+enum UnitType {
+  FLAT
+  SHOP
+}
+
+enum UnitStatus {
+  AVAILABLE
+  OCCUPIED
+}
+
+enum TenantStatus {
+  ACTIVE
+  MOVED_OUT
+}
+
+enum LeaseStatus {
+  ACTIVE
+  ENDED
+}
+
+enum BillStatus {
+  DUE
+  PARTIAL
+  LATE
+  PAID
+}
+
+enum PaymentMethod {
+  CASH
+  BANK_TRANSFER
+  CARD
+  OTHER
+}
+
+enum RepairPaidBy {
+  OWNER
+  TENANT
+}
+
+enum RepairStatus {
+  OPEN
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+}
+
+enum SettlementResult {
+  REFUND
+  PAYABLE
+  SETTLED
+}
+
+enum AuditAction {
+  LOGIN_SUCCESS
+  LOGIN_FAILED
+  LOGOUT
+  PASSWORD_CHANGED
+  RENT_PAYMENT
+  PAYMENT_DELETED
+  RECEIPT_PRINTED
+  REPAIR_ADDED
+  REPAIR_UPDATED
+  REPAIR_DELETED
+  TENANT_ADDED
+  TENANT_UPDATED
+  TENANT_MOVED_OUT
+  TENANT_DELETED
+  UNIT_ADDED
+  UNIT_UPDATED
+  UNIT_DELETED
+  PROPERTY_ADDED
+  PROPERTY_UPDATED
+  PROPERTY_DELETED
+  REPORT_PDF_EXPORTED
+  REPORT_EXCEL_EXPORTED
+  MONTH_GENERATED
+  SETTLEMENT_CREATED
+  SETTLEMENT_SETTLED
+  USER_SUSPENDED
+  USER_ENABLED
+  ROLE_CHANGED
+}

@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate Prisma client
+        run: npm run prisma:generate --workspace @rms/api
+        env:
+          DATABASE_URL: postgresql://rms:rms@localhost:5432/rms?schema=public
+
+      - name: Build applications
+        run: npm run build
+
+      - name: Type-check workspaces
+        run: npm run lint
+
+      - name: Run API tests
+        run: npm test --workspace @rms/api
