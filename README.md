@@ -28,7 +28,7 @@ Container images are defined in `apps/api/Dockerfile` and `apps/web/Dockerfile`.
 
 Tenant ID documents accept PDF, JPEG, or PNG files up to 5 MB and are stored under `STORAGE_PATH` in development. Production should provide an S3-compatible storage adapter before exposing uploads publicly.
 
-Authentication endpoints are under `/auth`: registration, login, refresh-cookie rotation, logout, forgot-password/reset-password, and the protected `/auth/me` probe. In development, reset messages are appended to `EMAIL_SINK_PATH`; production should replace that sink with a real mail provider. PostgreSQL must be running before starting the API because Prisma connects during application startup.
+Authentication endpoints are under `/auth`: registration, email activation, login, refresh-cookie rotation, logout, forgot-password/reset-password, and the protected `/auth/me` probe. Registration sends a single-use activation link and unverified accounts cannot log in. In development, reset and activation messages are appended to `EMAIL_SINK_PATH`; production uses the configured Microsoft Graph sender. PostgreSQL must be running before starting the API because Prisma connects during application startup.
 
 To initialize the database when Docker/PostgreSQL is available:
 
@@ -41,6 +41,8 @@ npm run prisma:seed --workspace @rms/api
 ```
 
 `apps/api/prisma/rls.sql` enables PostgreSQL Row-Level Security for business tables. The API must set the transaction-local `app.current_owner_id` from the verified JWT before production traffic is enabled.
+
+CI audits production dependencies for high-severity vulnerabilities. The development Prisma CLI currently reports a transitive `deepmerge-ts` advisory, and ExcelJS carries a moderate transitive `uuid` advisory; both are tracked for upstream-compatible upgrades without forcing a breaking report-library downgrade.
 
 ## Production deployment checklist
 

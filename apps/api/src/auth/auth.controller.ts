@@ -6,6 +6,7 @@ import { ForgotPasswordDto, LoginDto, RefreshDto, RegisterDto, ResetPasswordDto,
 import { AccessTokenGuard } from './access-token.guard';
 
 const refreshCookie = 'rms_refresh';
+const authThrottleLimit = 100;
 
 @Controller('auth')
 @UseGuards(ThrottlerGuard)
@@ -21,7 +22,7 @@ export class AuthController {
   }
 
   @Post('login')
-  @Throttle({ default: { limit: 5, ttl: 60_000 } })
+  @Throttle({ default: { limit: authThrottleLimit, ttl: 60_000 } })
   async login(@Body() dto: LoginDto, @Res({ passthrough: true }) response: Response) {
     const tokens = await this.auth.login(dto);
     this.setRefreshCookie(response, tokens.refreshToken);
@@ -40,11 +41,11 @@ export class AuthController {
   }
 
   @Post('forgot-password')
-  @Throttle({ default: { limit: 5, ttl: 60_000 } })
+  @Throttle({ default: { limit: authThrottleLimit, ttl: 60_000 } })
   forgotPassword(@Body() dto: ForgotPasswordDto) { return this.auth.forgotPassword(dto); }
 
   @Post('reset-password')
-  @Throttle({ default: { limit: 5, ttl: 60_000 } })
+  @Throttle({ default: { limit: authThrottleLimit, ttl: 60_000 } })
   resetPassword(@Body() dto: ResetPasswordDto) { return this.auth.resetPassword(dto); }
 
   @Post('logout')

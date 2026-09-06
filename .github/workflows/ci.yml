@@ -8,6 +8,31 @@ on:
 jobs:
   validate:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: rms
+          POSTGRES_PASSWORD: rms
+          POSTGRES_DB: rms
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U rms -d rms"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      NODE_ENV: test
+      API_PORT: 3000
+      WEB_PORT: 5173
+      CORS_ORIGIN: http://localhost:5173
+      FRONTEND_URL: http://localhost:5173
+      DATABASE_URL: postgresql://rms:rms@localhost:5432/rms?schema=public
+      DIRECT_URL: postgresql://rms:rms@localhost:5432/rms?schema=public
+      JWT_ACCESS_SECRET: ci-access-secret
+      JWT_REFRESH_SECRET: ci-refresh-secret
+      EMAIL_SINK_PATH: ./.email-sink
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -23,8 +48,12 @@ jobs:
 
       - name: Generate Prisma client
         run: npm run prisma:generate --workspace @rms/api
-        env:
-          DATABASE_URL: postgresql://rms:rms@localhost:5432/rms?schema=public
+
+      - name: Apply database migrations
+        run: npx prisma migrate deploy --schema apps/api/prisma/schema.prisma
+
+      - name: Seed database
+        run: npm run prisma:seed --workspace @rms/api
 
       - name: Build applications
         run: npm run build
@@ -34,3 +63,9 @@ jobs:
 
       - name: Run API tests
         run: npm test --workspace @rms/api
+
+      - name: Install Playwright browser
+        run: npx playwright install --with-deps chromium
+
+      - name: Run end-to-end tests
+        run: npx playwright test --project=chromium

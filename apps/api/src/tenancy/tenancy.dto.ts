@@ -70,3 +70,30 @@ export class SettleDto {
   @MinLength(1)
   reason!: string;
 }
+
+export class CreateLeaseDto {
+  @IsUUID()
+  tenantId!: string;
+
+  @IsUUID()
+  unitId!: string;
+
+  @IsNumber({ maxDecimalPlaces: 2 })
+  @Min(0)
+  monthlyRent!: number;
+
+  @IsNumber({ maxDecimalPlaces: 2 })
+  @Min(0)
+  securityDeposit!: number;
+
+  @IsDateString()
+  startDate!: string;
+
+  @IsOptional()
+  @IsDateString()
+  depositDate?: string;
+
+  @IsOptional()
+  @IsString()
+  depositNote?: string;
+}

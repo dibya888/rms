@@ -3,7 +3,7 @@ import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma.service';
 import { calculateSettlement } from '../billing/billing.rules';
 import { StorageService } from '../storage.service';
-import { CreateTenantDto, MoveOutDto, SettleDto } from './tenancy.dto';
+import { CreateLeaseDto, CreateTenantDto, MoveOutDto, SettleDto } from './tenancy.dto';
 
 @Injectable()
 export class TenancyService {
@@ -11,6 +11,24 @@ export class TenancyService {
 
   listTenants(ownerId: string) {
     return this.prisma.withOwner(ownerId, (transaction) => transaction.tenant.findMany({ where: { ownerId, deletedAt: null }, include: { unit: { include: { property: true } }, leases: { orderBy: { startDate: 'desc' } } }, orderBy: { createdAt: 'desc' } }));
+  }
+
+  listLeases(ownerId: string) {
+    return this.prisma.withOwner(ownerId, (transaction) => transaction.leaseAgreement.findMany({ where: { ownerId }, include: { tenant: true, unit: { include: { property: true } } }, orderBy: { startDate: 'desc' } }));
+  }
+
+  async createLease(ownerId: string, dto: CreateLeaseDto) {
+    return this.prisma.withOwner(ownerId, async (transaction) => {
+      const tenant = await transaction.tenant.findFirst({ where: { id: dto.tenantId, ownerId, status: 'ACTIVE', deletedAt: null } });
+      const unit = await transaction.unit.findFirst({ where: { id: dto.unitId, ownerId, deletedAt: null, status: 'OCCUPIED' } });
+      if (!tenant || !unit || tenant.unitId !== unit.id) throw new NotFoundException('active tenant and occupied unit must belong together');
+      const startDate = new Date(dto.startDate);
+      const current = await transaction.leaseAgreement.findFirst({ where: { ownerId, tenantId: tenant.id, status: 'ACTIVE' }, orderBy: { startDate: 'desc' } });
+      if (current) await transaction.leaseAgreement.update({ where: { id: current.id }, data: { status: 'ENDED', endDate: startDate } });
+      const lease = await transaction.leaseAgreement.create({ data: { ownerId, tenantId: tenant.id, unitId: unit.id, monthlyRent: new Prisma.Decimal(dto.monthlyRent), securityDeposit: new Prisma.Decimal(dto.securityDeposit), depositDate: dto.depositDate ? new Date(dto.depositDate) : undefined, depositNote: dto.depositNote, startDate }, include: { tenant: true, unit: true } });
+      await transaction.auditLog.create({ data: { ownerId, actorUserId: ownerId, action: 'TENANT_UPDATED', details: { tenantId: tenant.id, leaseId: lease.id, leaseAmended: Boolean(current) } } });
+      return lease;
+    });
   }
 
   async createTenant(ownerId: string, dto: CreateTenantDto) {

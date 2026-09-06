@@ -106,6 +106,15 @@ describe('portfolio owner isolation (database)', () => {
     expect(tenantsB[0].leases).toHaveLength(1);
   });
 
+  it('lists only the authenticated owner lease records', async () => {
+    const leasesA = await tenancy.listLeases(ownerA);
+    const leasesB = await tenancy.listLeases(ownerB);
+    expect(leasesA.map((lease) => lease.id)).toHaveLength(1);
+    expect(leasesB.map((lease) => lease.id)).toHaveLength(1);
+    expect(leasesA[0].ownerId).toBe(ownerA);
+    expect(leasesB[0].ownerId).toBe(ownerB);
+  });
+
   it('does not allow one owner to create or operate on another owner tenant', async () => {
     await expect(tenancy.createTenant(ownerA, { unitId: unitB, name: 'Cross-owner tenant', phone: '1234567', address: 'Unknown', moveInDate: '2026-09-01', monthlyRent: 1100, securityDeposit: 1100 })).rejects.toThrow('unit not found');
     await expect(tenancy.previewSettlement(ownerA, tenantB)).rejects.toThrow('tenant lease not found');

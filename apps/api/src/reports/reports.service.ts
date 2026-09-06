@@ -1,4 +1,4 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, NotFoundException } from '@nestjs/common';
 import ExcelJS from 'exceljs';
 import PDFDocument from 'pdfkit';
 import { BillStatus, Prisma } from '@prisma/client';
@@ -8,6 +8,23 @@ import { ReportFilterDto } from './reports.dto';
 @Injectable()
 export class ReportsService {
   constructor(@Inject(PrismaService) private readonly prisma: PrismaService) {}
+
+  async exportReport(ownerId: string, reportName: string, format: 'pdf' | 'xlsx', filters: ReportFilterDto) {
+    const data = reportName === 'summary' ? await this.summary(ownerId, filters) : reportName === 'transactions' ? await this.transactions(ownerId, filters) : reportName === 'utilities' ? await this.utilities(ownerId, filters) : reportName === 'outstanding' ? await this.outstanding(ownerId, filters) : reportName === 'repairs' ? await this.repairs(ownerId, filters) : reportName.startsWith('income/') ? await this.groupedIncome(ownerId, filters, reportName.slice(7) as 'property' | 'unit' | 'tenant' | 'month' | 'year') : undefined;
+    if (data === undefined) throw new NotFoundException('report not found');
+    const rows = Array.isArray(data) ? data : 'rows' in data && Array.isArray(data.rows) ? data.rows : [data];
+    if (format === 'xlsx') {
+      const workbook = new ExcelJS.Workbook();
+      const sheet = workbook.addWorksheet(reportName.replaceAll('/', '-'));
+      sheet.addRows(rows.map((row) => typeof row === 'object' && row !== null ? Object.fromEntries(Object.entries(row).map(([key, value]) => [key, value instanceof Prisma.Decimal ? value.toString() : value instanceof Date ? value.toISOString() : typeof value === 'object' ? JSON.stringify(value) : value])) : { value: row }));
+      const buffer = await workbook.xlsx.writeBuffer();
+      await this.prisma.withOwner(ownerId, (transaction) => transaction.auditLog.create({ data: { ownerId, actorUserId: ownerId, action: 'REPORT_EXCEL_EXPORTED', details: { report: reportName, filters: { ...filters } } } }));
+      return { contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', buffer };
+    }
+    const buffer = await new Promise<Buffer>((resolve, reject) => { const document = new PDFDocument({ margin: 48 }); const chunks: Buffer[] = []; document.on('data', (chunk) => chunks.push(chunk)); document.on('end', () => resolve(Buffer.concat(chunks))); document.on('error', reject); document.fontSize(18).fillColor('#315B47').text(`RMS ${reportName} report`); document.moveDown(); document.fontSize(8).fillColor('#18211F').text(JSON.stringify(rows, (_, value) => value instanceof Date ? value.toISOString() : value)); document.end(); });
+    await this.prisma.withOwner(ownerId, (transaction) => transaction.auditLog.create({ data: { ownerId, actorUserId: ownerId, action: 'REPORT_PDF_EXPORTED', details: { report: reportName, filters: { ...filters } } } }));
+    return { contentType: 'application/pdf', buffer };
+  }
 
   async transactions(ownerId: string, filters: ReportFilterDto) {
     const bills = await this.prisma.withOwner(ownerId, (transaction) => transaction.rentBill.findMany({ where: this.billWhere(ownerId, filters), include: { lease: { include: { tenant: true } }, unit: { include: { property: true } }, payments: { orderBy: { paidOn: 'asc' } } }, orderBy: { billMonth: 'desc' } }));

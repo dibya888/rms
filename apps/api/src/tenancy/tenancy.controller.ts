@@ -3,7 +3,7 @@ import { FileInterceptor } from '@nestjs/platform-express';
 import { BadRequestException, UseInterceptors } from '@nestjs/common';
 import type { Request } from 'express';
 import { AccessTokenGuard } from '../auth/access-token.guard';
-import { CreateTenantDto, MoveOutDto, SettleDto } from './tenancy.dto';
+import { CreateLeaseDto, CreateTenantDto, MoveOutDto, SettleDto } from './tenancy.dto';
 import { TenancyService } from './tenancy.service';
 
 type AuthenticatedRequest = Request & { user: { sub: string } };
@@ -18,6 +18,12 @@ export class TenancyController {
 
   @Post()
   create(@Req() request: AuthenticatedRequest, @Body() dto: CreateTenantDto) { return this.tenancy.createTenant(request.user.sub, dto); }
+
+  @Get('leases')
+  leases(@Req() request: AuthenticatedRequest) { return this.tenancy.listLeases(request.user.sub); }
+
+  @Post('leases')
+  createLease(@Req() request: AuthenticatedRequest, @Body() dto: CreateLeaseDto) { return this.tenancy.createLease(request.user.sub, dto); }
 
   @Post(':tenantId/move-out')
   moveOut(@Req() request: AuthenticatedRequest, @Param('tenantId') tenantId: string, @Body() dto: MoveOutDto) { return this.tenancy.moveOut(request.user.sub, tenantId, dto); }
