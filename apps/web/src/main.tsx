@@ -1,4 +1,4 @@
-import { ChangeEvent, FormEvent, StrictMode, useEffect, useState } from 'react';
+import { ChangeEvent, FormEvent, Fragment, StrictMode, useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import './styles.css';
 
@@ -12,6 +12,7 @@ const money = (value: string | number) => new Intl.NumberFormat('en-US', { style
 const NAV_ITEMS: Array<{ key: string; label: string; href: string }> = [
   { key: 'overview', label: 'Overview', href: '/' },
   { key: 'properties', label: 'Properties', href: '/properties' },
+  { key: 'units', label: 'Units', href: '/units/manage' },
   { key: 'tenants', label: 'Tenants', href: '/tenants' },
   { key: 'payments', label: 'Payments', href: '/payments' },
   { key: 'reports', label: 'Reports', href: '/reports' },
@@ -32,16 +33,6 @@ function App() {
   const [summary, setSummary] = useState<Summary | null>(null);
   const [firstName, setFirstName] = useState('');
   const [error, setError] = useState('');
-  useEffect(() => {
-    // The only remaining global click hook: the Dashboard's compact "+ Add
-    // property" button has no href/onClick of its own, so route it here.
-    function routeLegacyControls(event: MouseEvent) {
-      const element = event.target instanceof Element ? event.target.closest('button') : null;
-      if (element instanceof HTMLButtonElement && element.classList.contains('primary-button') && element.classList.contains('compact') && element.textContent?.includes('Add property')) window.location.href = '/properties/new';
-    }
-    document.addEventListener('click', routeLegacyControls);
-    return () => document.removeEventListener('click', routeLegacyControls);
-  }, []);
   useEffect(() => { if (!token) return; Promise.all([fetch(`${apiUrl}/dashboard/summary`, { headers: { Authorization: `Bearer ${token}` } }), fetch(`${apiUrl}/auth/me`, { headers: { Authorization: `Bearer ${token}` } })]).then(async ([summaryResponse, meResponse]) => { if (!summaryResponse.ok || !meResponse.ok) throw new Error('Your session may have expired.'); return Promise.all([summaryResponse.json() as Promise<Summary>, meResponse.json() as Promise<{ user: { firstName?: string } }>]); }).then(([nextSummary, me]) => { setSummary(nextSummary); setFirstName(me.user.firstName ?? ''); }).catch((reason: Error) => { setError(reason.message); setToken(null); localStorage.removeItem('rms_access_token'); }); }, [token]);
   if (!token) return window.location.pathname === '/register' ? <Register /> : window.location.pathname === '/activate' ? <Activate /> : window.location.pathname === '/forgot-password' ? <ForgotPassword /> : window.location.pathname === '/reset-password' ? <ResetPassword /> : <Login error={error} onLogin={(next) => { localStorage.setItem('rms_access_token', next); setToken(next); setError(''); }} />;
   if (window.location.pathname === '/properties/new') return <AddProperty token={token} />;
@@ -117,12 +108,41 @@ function AddProperty({ token }: { token: string }) {
 
 function AddUnit({ token }: { token: string }) {
   const [properties, setProperties] = useState<Array<{ id: string; name: string }>>([]);
-  const [fields, setFields] = useState({ propertyId: '', unitNo: '', unitType: 'FLAT', rent: '', bedrooms: '1', bathrooms: '1', floor: '', frontageSqft: '', category: '' });
+  const [fields, setFields] = useState({
+    propertyId: '',
+    unitNo: '',
+    unitType: 'FLAT',
+    rent: '',
+    bedrooms: '1',
+    bathrooms: '1',
+    livingRooms: '1',
+    diningRooms: '1',
+    kitchens: '1',
+    balconies: '0',
+    floor: '',
+    frontageSqft: '',
+    category: ''
+  });
   const [message, setMessage] = useState(''); const [busy, setBusy] = useState(false);
   useEffect(() => { fetch(`${apiUrl}/portfolio/properties`, { headers: { Authorization: `Bearer ${token}` } }).then(async (response) => { if (!response.ok) throw new Error('Unable to load properties.'); return response.json(); }).then(setProperties).catch((error: Error) => setMessage(error.message)); }, [token]);
   const update = (key: keyof typeof fields) => (event: ChangeEvent<HTMLInputElement | HTMLSelectElement>) => setFields({ ...fields, [key]: event.target.value });
-  async function submit(event: FormEvent) { event.preventDefault(); setBusy(true); setMessage(''); const unitAttributes = fields.unitType === 'FLAT' ? { bedrooms: Number(fields.bedrooms), bathrooms: Number(fields.bathrooms) } : { floor: fields.floor, frontageSqft: Number(fields.frontageSqft), category: fields.category }; try { const csrfResponse = await fetch(`${apiUrl}/auth/csrf`, { credentials: 'include' }); const { csrfToken } = await csrfResponse.json(); const response = await fetch(`${apiUrl}/portfolio/properties/${fields.propertyId}/units`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}`, 'X-CSRF-Token': csrfToken }, credentials: 'include', body: JSON.stringify({ unitNo: fields.unitNo, unitType: fields.unitType, rent: Number(fields.rent), unitAttributes }) }); const body = await response.json(); if (!response.ok) throw new Error(Array.isArray(body.message) ? body.message.join(', ') : body.message ?? 'Unable to add unit.'); window.location.href = '/properties'; } catch (error) { setMessage(error instanceof Error ? error.message : 'Unable to add unit.'); } finally { setBusy(false); } }
-  return <main className="auth-shell"><section className="auth-intro"><p className="eyebrow">RMS / PORTFOLIO</p><h1>Give every door a clear identity.</h1><p className="lede">Create a residential or commercial unit with the attributes needed for accurate occupancy and billing.</p></section><form className="auth-card" onSubmit={submit}><p className="card-kicker">New unit</p><h2>Add unit</h2><label>Property<select value={fields.propertyId} onChange={update('propertyId')} required><option value="">Choose a property</option>{properties.map((property) => <option value={property.id} key={property.id}>{property.name}</option>)}</select></label><label>Unit number<input value={fields.unitNo} onChange={update('unitNo')} required /></label><label>Unit type<select value={fields.unitType} onChange={update('unitType')}><option value="FLAT">Flat</option><option value="SHOP">Shop</option></select></label><label>Monthly rent<input type="number" min="0" step="0.01" value={fields.rent} onChange={update('rent')} required /></label>{fields.unitType === 'FLAT' ? <><label>Bedrooms<input type="number" min="0" value={fields.bedrooms} onChange={update('bedrooms')} required /></label><label>Bathrooms<input type="number" min="0" value={fields.bathrooms} onChange={update('bathrooms')} required /></label></> : <><label>Floor<input value={fields.floor} onChange={update('floor')} required /></label><label>Frontage square feet<input type="number" min="0" value={fields.frontageSqft} onChange={update('frontageSqft')} required /></label><label>Category<input value={fields.category} onChange={update('category')} required /></label></>}{message && <p className="error">{message}</p>}<button className="primary-button" disabled={busy || !properties.length}>{busy ? 'Adding unit...' : 'Add unit'} <span>↗</span></button><p className="form-note"><a href="/properties">Return to properties.</a></p></form></main>;
+  async function submit(event: FormEvent) { event.preventDefault(); setBusy(true); setMessage(''); 
+    const unitAttributes = fields.unitType === 'FLAT'
+    ? {
+        bedrooms: Number(fields.bedrooms),
+        bathrooms: Number(fields.bathrooms),
+        livingRooms: Number(fields.livingRooms),
+        diningRooms: Number(fields.diningRooms),
+        kitchens: Number(fields.kitchens),
+        balconies: Number(fields.balconies),
+      }
+    : {
+        floor: fields.floor,
+        frontageSqft: Number(fields.frontageSqft),
+        category: fields.category,
+      };
+    try { const csrfResponse = await fetch(`${apiUrl}/auth/csrf`, { credentials: 'include' }); const { csrfToken } = await csrfResponse.json(); const response = await fetch(`${apiUrl}/portfolio/properties/${fields.propertyId}/units`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}`, 'X-CSRF-Token': csrfToken }, credentials: 'include', body: JSON.stringify({ unitNo: fields.unitNo, unitType: fields.unitType, rent: Number(fields.rent), unitAttributes }) }); const body = await response.json(); if (!response.ok) throw new Error(Array.isArray(body.message) ? body.message.join(', ') : body.message ?? 'Unable to add unit.'); window.location.href = '/properties'; } catch (error) { setMessage(error instanceof Error ? error.message : 'Unable to add unit.'); } finally { setBusy(false); } }
+  return <main className="auth-shell"><section className="auth-intro"><p className="eyebrow">RMS / PORTFOLIO</p><h1>Give every door a clear identity.</h1><p className="lede">Create a residential or commercial unit with the attributes needed for accurate occupancy and billing.</p></section><form className="auth-card" onSubmit={submit}><p className="card-kicker">New unit</p><h2>Add unit</h2><label>Property<select value={fields.propertyId} onChange={update('propertyId')} required><option value="">Choose a property</option>{properties.map((property) => <option value={property.id} key={property.id}>{property.name}</option>)}</select></label><label>Unit number<input value={fields.unitNo} onChange={update('unitNo')} required /></label><label>Unit type<select value={fields.unitType} onChange={update('unitType')}><option value="FLAT">Flat</option><option value="SHOP">Shop</option></select></label><label>Monthly rent<input type="number" min="0" step="0.01" value={fields.rent} onChange={update('rent')} required /></label>{fields.unitType === 'FLAT' ? <><label>Bedrooms<input type="number" min="0" value={fields.bedrooms} onChange={update('bedrooms')} required /></label><label>Bathrooms<input type="number" min="0" value={fields.bathrooms} onChange={update('bathrooms')} required /></label><label>Living rooms<input type="number" min="0" value={fields.livingRooms} onChange={update('livingRooms')} required /></label><label>Dining rooms<input type="number" min="0" value={fields.diningRooms} onChange={update('diningRooms')} required /></label><label>Kitchens<input type="number" min="0" value={fields.kitchens} onChange={update('kitchens')} required /></label><label>Balconies<input type="number" min="0" value={fields.balconies} onChange={update('balconies')} required /></label></> : <><label>Floor<input value={fields.floor} onChange={update('floor')} required /></label><label>Frontage square feet<input type="number" min="0" value={fields.frontageSqft} onChange={update('frontageSqft')} required /></label><label>Category<input value={fields.category} onChange={update('category')} required /></label></>}{message && <p className="error">{message}</p>}<button className="primary-button" disabled={busy || !properties.length}>{busy ? 'Adding unit...' : 'Add unit'} <span>↗</span></button><p className="form-note"><a href="/properties">Return to properties.</a></p></form></main>;
 }
 
 function ManageProperties({ token }: { token: string }) {
@@ -136,33 +156,653 @@ function ManageProperties({ token }: { token: string }) {
 }
 
 function ManageUnits({ token }: { token: string }) {
-  const [units, setUnits] = useState<Array<{ id: string; unitNo: string; rent: string; status: string; property: { name: string } }>>([]);
-  const [message, setMessage] = useState(''); const [busy, setBusy] = useState('');
-  const load = () => fetch(`${apiUrl}/portfolio/properties`, { headers: { Authorization: `Bearer ${token}` } }).then(async (response) => { if (!response.ok) throw new Error('Unable to load units.'); return response.json(); }).then((properties: Array<{ name: string; units: Array<{ id: string; unitNo: string; rent: string; status: string }> }>) => { setUnits(properties.flatMap((property) => property.units.map((unit) => ({ ...unit, property: { name: property.name } })))); }).catch((error: Error) => setMessage(error.message));
-  useEffect(() => { void load(); }, [token]);
-  async function save(unit: typeof units[number], event: FormEvent<HTMLFormElement>) { event.preventDefault(); setBusy(unit.id); setMessage(''); const data = new FormData(event.currentTarget); try { const csrfResponse = await fetch(`${apiUrl}/auth/csrf`, { credentials: 'include' }); const { csrfToken } = await csrfResponse.json(); const response = await fetch(`${apiUrl}/portfolio/units/${unit.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}`, 'X-CSRF-Token': csrfToken }, credentials: 'include', body: JSON.stringify({ unitNo: data.get('unitNo'), rent: Number(data.get('rent')), status: data.get('status') }) }); const body = await response.json(); if (!response.ok) throw new Error(Array.isArray(body.message) ? body.message.join(', ') : body.message ?? 'Unable to update unit.'); await load(); } catch (error) { setMessage(error instanceof Error ? error.message : 'Unable to update unit.'); } finally { setBusy(''); } }
-  async function remove(unit: typeof units[number]) { if (!window.confirm(`Delete ${unit.property.name} / ${unit.unitNo}?`)) return; setBusy(unit.id); setMessage(''); try { const csrfResponse = await fetch(`${apiUrl}/auth/csrf`, { credentials: 'include' }); const { csrfToken } = await csrfResponse.json(); const response = await fetch(`${apiUrl}/portfolio/units/${unit.id}`, { method: 'DELETE', headers: { Authorization: `Bearer ${token}`, 'X-CSRF-Token': csrfToken }, credentials: 'include' }); const body = await response.json(); if (!response.ok) throw new Error(Array.isArray(body.message) ? body.message.join(', ') : body.message ?? 'Unable to delete unit.'); await load(); } catch (error) { setMessage(error instanceof Error ? error.message : 'Unable to delete unit.'); } finally { setBusy(''); } }
-  return <main className="app-shell"><header className="topbar"><div className="brand"><span className="brand-mark">R</span><span>RMS</span></div><TopNav active="properties" /><a className="quiet-button" href="/properties">Back</a></header><div className="content"><section className="welcome-row"><div><p className="eyebrow">RMS / UNITS</p><h1>Manage units.</h1><p className="subtle">Update unit pricing or remove available units from the portfolio.</p></div><a className="primary-button compact" href="/units/new">+ Add unit</a></section>{message && <p className="error">{message}</p>}<section className="tenant-list">{units.map((unit) => <form className="dashboard-card" key={unit.id} onSubmit={(event) => save(unit, event)}><p className="card-kicker">{unit.property.name} · {unit.status}</p><label>Unit number<input name="unitNo" defaultValue={unit.unitNo} required /></label><label>Monthly rent<input name="rent" type="number" min="0" step="0.01" defaultValue={unit.rent} required /></label><label>Status<select name="status" defaultValue={unit.status}><option value="AVAILABLE">Available</option><option value="OCCUPIED">Occupied</option></select></label><div className="report-actions"><button className="primary-button" disabled={busy === unit.id}>{busy === unit.id ? 'Saving...' : 'Save changes'}</button><button type="button" className="quiet-button export-button" onClick={() => remove(unit)} disabled={busy === unit.id}>Delete unit</button></div></form>)}{!units.length && !message && <p className="empty-state">No units yet.</p>}</section></div></main>;
+  type Unit = {
+    id: string;
+    unitNo: string;
+    rent: string;
+    status: string;
+    unitType?: string;
+    unitAttributes?: Record<string, unknown> | null;
+    property: { name: string };
+  };
+
+  const [units, setUnits] = useState<Unit[]>([]);
+  const [message, setMessage] = useState('');
+  const [busy, setBusy] = useState('');
+  const [search, setSearch] = useState('');
+  const [propertyFilter, setPropertyFilter] = useState('');
+  const [typeFilter, setTypeFilter] = useState('');
+  const [statusFilter, setStatusFilter] = useState('');
+  const [expandedId, setExpandedId] = useState('');
+  const [editingId, setEditingId] = useState('');
+
+  const load = () =>
+    fetch(`${apiUrl}/portfolio/properties`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+      .then(async (response) => {
+        if (!response.ok) throw new Error('Unable to load units.');
+        return response.json();
+      })
+      .then(
+        (
+          properties: Array<{
+            name: string;
+            units: Array<{
+              id: string;
+              unitNo: string;
+              rent: string;
+              status: string;
+              unitType?: string;
+              unitAttributes?: Record<string, unknown> | null;
+            }>;
+          }>
+        ) => {
+          setUnits(
+            properties.flatMap((property) =>
+              property.units.map((unit) => ({
+                ...unit,
+                property: { name: property.name },
+              }))
+            )
+          );
+        }
+      )
+      .catch((error: Error) => setMessage(error.message));
+
+  useEffect(() => {
+    void load();
+  }, [token]);
+
+  async function save(unit: Unit, event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setBusy(unit.id);
+    setMessage('');
+
+    const data = new FormData(event.currentTarget);
+
+    try {
+      const csrfResponse = await fetch(`${apiUrl}/auth/csrf`, {
+        credentials: 'include',
+      });
+
+      const { csrfToken } = await csrfResponse.json();
+
+      const response = await fetch(
+        `${apiUrl}/portfolio/units/${unit.id}`,
+        {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+            'X-CSRF-Token': csrfToken,
+          },
+          credentials: 'include',
+          body: JSON.stringify({
+            unitNo: data.get('unitNo'),
+            rent: Number(data.get('rent')),
+            status: data.get('status'),
+          }),
+        }
+      );
+
+      const body = await response.json();
+
+      if (!response.ok) {
+        throw new Error(
+          Array.isArray(body.message)
+            ? body.message.join(', ')
+            : body.message ?? 'Unable to update unit.'
+        );
+      }
+
+      setEditingId('');
+      await load();
+    } catch (error) {
+      setMessage(
+        error instanceof Error ? error.message : 'Unable to update unit.'
+      );
+    } finally {
+      setBusy('');
+    }
+  }
+
+  async function remove(unit: Unit) {
+    if (
+      !window.confirm(
+        `Delete ${unit.property.name} / ${unit.unitNo}?\n\nThis will remove the unit from your active portfolio.`
+      )
+    ) {
+      return;
+    }
+
+    setBusy(unit.id);
+    setMessage('');
+
+    try {
+      const csrfResponse = await fetch(`${apiUrl}/auth/csrf`, {
+        credentials: 'include',
+      });
+
+      const { csrfToken } = await csrfResponse.json();
+
+      const response = await fetch(
+        `${apiUrl}/portfolio/units/${unit.id}`,
+        {
+          method: 'DELETE',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'X-CSRF-Token': csrfToken,
+          },
+          credentials: 'include',
+        }
+      );
+
+      const body = await response.json();
+
+      if (!response.ok) {
+        throw new Error(
+          Array.isArray(body.message)
+            ? body.message.join(', ')
+            : body.message ?? 'Unable to delete unit.'
+        );
+      }
+
+      if (expandedId === unit.id) setExpandedId('');
+      if (editingId === unit.id) setEditingId('');
+
+      await load();
+    } catch (error) {
+      setMessage(
+        error instanceof Error ? error.message : 'Unable to delete unit.'
+      );
+    } finally {
+      setBusy('');
+    }
+  }
+
+  const properties = Array.from(
+    new Set(units.map((unit) => unit.property.name))
+  ).sort();
+
+  const filteredUnits = units.filter((unit) => {
+    const query = search.trim().toLowerCase();
+
+    const matchesSearch =
+      !query ||
+      unit.unitNo.toLowerCase().includes(query) ||
+      unit.property.name.toLowerCase().includes(query);
+
+    const matchesProperty =
+      !propertyFilter || unit.property.name === propertyFilter;
+
+    const matchesType =
+      !typeFilter || unit.unitType === typeFilter;
+
+    const matchesStatus =
+      !statusFilter || unit.status === statusFilter;
+
+    return (
+      matchesSearch &&
+      matchesProperty &&
+      matchesType &&
+      matchesStatus
+    );
+  });
+
+  const totalUnits = units.length;
+  const availableUnits = units.filter(
+    (unit) => unit.status === 'AVAILABLE'
+  ).length;
+  const occupiedUnits = units.filter(
+    (unit) => unit.status === 'OCCUPIED'
+  ).length;
+  const flatUnits = units.filter(
+    (unit) => unit.unitType === 'FLAT'
+  ).length;
+  const shopUnits = units.filter(
+    (unit) => unit.unitType === 'SHOP'
+  ).length;
+
+  function getDetails(unit: Unit) {
+    const attributes = unit.unitAttributes ?? {};
+
+    if (unit.unitType === 'SHOP') {
+      const floor =
+        typeof attributes.floor === 'string'
+          ? attributes.floor
+          : '';
+
+      const frontage =
+        typeof attributes.frontageSqft === 'number'
+          ? `${attributes.frontageSqft} sqft`
+          : '';
+
+      const category =
+        typeof attributes.category === 'string'
+          ? attributes.category
+          : '';
+
+      return [floor, frontage, category].filter(Boolean).join(' · ') || 'Shop';
+    }
+
+    const bedrooms =
+      typeof attributes.bedrooms === 'number'
+        ? `${attributes.bedrooms} Bed`
+        : '';
+
+    const bathrooms =
+      typeof attributes.bathrooms === 'number'
+        ? `${attributes.bathrooms} Bath`
+        : '';
+
+    const livingRooms =
+      typeof attributes.livingRooms === 'number'
+        ? `${attributes.livingRooms} Living`
+        : '';
+
+    const diningRooms =
+      typeof attributes.diningRooms === 'number'
+        ? `${attributes.diningRooms} Dining`
+        : '';
+
+    const kitchens =
+      typeof attributes.kitchens === 'number'
+        ? `${attributes.kitchens} Kitchen`
+        : '';
+
+    const balconies =
+      typeof attributes.balconies === 'number'
+        ? `${attributes.balconies} Balcony`
+        : '';
+
+    return [
+      bedrooms,
+      bathrooms,
+      livingRooms,
+      diningRooms,
+      kitchens,
+      balconies,
+    ]
+      .filter(Boolean)
+      .join(' · ') || 'Flat';
+  }
+
+  return (
+    <main className="app-shell">
+      <header className="topbar">
+        <div className="brand">
+          <span className="brand-mark">R</span>
+          <span>RMS</span>
+        </div>
+
+        <TopNav active="units" />
+
+        <a className="quiet-button" href="/properties">
+          Back
+        </a>
+      </header>
+
+      <div className="content">
+        <section className="welcome-row">
+          <div>
+            <p className="eyebrow">RMS / UNITS</p>
+            <h1>Manage units.</h1>
+            <p className="subtle">
+              Manage flats, shops, rent and occupancy from one place.
+            </p>
+          </div>
+
+          <a className="primary-button compact" href="/units/new">
+            + Add unit
+          </a>
+        </section>
+
+        {message && <p className="error">{message}</p>}
+
+        <section className="metric-grid">
+          <Metric label="Total units" value={totalUnits} />
+          <Metric label="Available" value={availableUnits} />
+          <Metric label="Occupied" value={occupiedUnits} />
+          <Metric label="Flats" value={flatUnits} />
+          <Metric label="Shops" value={shopUnits} />
+        </section>
+
+        <section className="dashboard-card unit-toolbar">
+          <div className="unit-search">
+            <label>
+              Search
+              <input
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+                placeholder="Search unit or property..."
+              />
+            </label>
+          </div>
+
+          <label>
+            Property
+            <select
+              value={propertyFilter}
+              onChange={(event) => setPropertyFilter(event.target.value)}
+            >
+              <option value="">All properties</option>
+              {properties.map((property) => (
+                <option value={property} key={property}>
+                  {property}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <label>
+            Type
+            <select
+              value={typeFilter}
+              onChange={(event) => setTypeFilter(event.target.value)}
+            >
+              <option value="">All types</option>
+              <option value="FLAT">Flat</option>
+              <option value="SHOP">Shop</option>
+            </select>
+          </label>
+
+          <label>
+            Status
+            <select
+              value={statusFilter}
+              onChange={(event) => setStatusFilter(event.target.value)}
+            >
+              <option value="">All statuses</option>
+              <option value="AVAILABLE">Available</option>
+              <option value="OCCUPIED">Occupied</option>
+            </select>
+          </label>
+        </section>
+
+        <section className="dashboard-card unit-table-card">
+          <div className="section-heading">
+            <div>
+              <p className="card-kicker">Portfolio units</p>
+              <h2>
+                {filteredUnits.length} unit
+                {filteredUnits.length === 1 ? '' : 's'}
+              </h2>
+            </div>
+          </div>
+
+          {filteredUnits.length > 0 ? (
+            <div className="unit-table-wrap">
+              <table className="unit-table">
+                <thead>
+                  <tr>
+                    <th>Unit</th>
+                    <th>Property</th>
+                    <th>Type</th>
+                    <th>Details</th>
+                    <th>Monthly rent</th>
+                    <th>Status</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+
+                <tbody>
+                  {filteredUnits.map((unit) => (
+                    <Fragment key={unit.id}>
+                      <tr>
+                        <td>
+                          <strong>{unit.unitNo}</strong>
+                        </td>
+
+                        <td>{unit.property.name}</td>
+
+                        <td>
+                          <span className="unit-type-badge">
+                            {unit.unitType === 'SHOP'
+                              ? 'Shop'
+                              : 'Flat'}
+                          </span>
+                        </td>
+
+                        <td className="unit-details">
+                          {getDetails(unit)}
+                        </td>
+
+                        <td>
+                          <strong>
+                            {money(Number(unit.rent))}
+                          </strong>
+                        </td>
+
+                        <td>
+                          <span
+                            className={`status-badge ${
+                              unit.status === 'OCCUPIED'
+                                ? 'status-occupied'
+                                : 'status-available'
+                            }`}
+                          >
+                            <span className="status-dot" />
+                            {unit.status === 'OCCUPIED'
+                              ? 'Occupied'
+                              : 'Available'}
+                          </span>
+                        </td>
+
+                        <td>
+                          <div className="unit-actions">
+                            <button
+                              type="button"
+                              className="quiet-button export-button"
+                              onClick={() =>
+                                setExpandedId(
+                                  expandedId === unit.id
+                                    ? ''
+                                    : unit.id
+                                )
+                              }
+                            >
+                              {expandedId === unit.id
+                                ? 'Hide'
+                                : 'View'}
+                            </button>
+
+                            <button
+                              type="button"
+                              className="quiet-button export-button"
+                              onClick={() => {
+                                setEditingId(
+                                  editingId === unit.id
+                                    ? ''
+                                    : unit.id
+                                );
+                                setExpandedId('');
+                              }}
+                            >
+                              {editingId === unit.id
+                                ? 'Cancel'
+                                : 'Edit'}
+                            </button>
+
+                            <button
+                              type="button"
+                              className="danger-button"
+                              onClick={() => remove(unit)}
+                              disabled={busy === unit.id}
+                            >
+                              {busy === unit.id
+                                ? 'Deleting...'
+                                : 'Delete'}
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+
+                      {expandedId === unit.id && (
+                        <tr className="unit-expanded-row">
+                          <td colSpan={7}>
+                            <div className="unit-detail-panel">
+                              <div>
+                                <span className="eyebrow">
+                                  UNIT DETAILS
+                                </span>
+                                <h3>
+                                  {unit.property.name} · {unit.unitNo}
+                                </h3>
+                              </div>
+
+                              <div className="unit-detail-grid">
+                                <div>
+                                  <span>Unit type</span>
+                                  <strong>
+                                    {unit.unitType === 'SHOP'
+                                      ? 'Shop'
+                                      : 'Flat'}
+                                  </strong>
+                                </div>
+
+                                <div>
+                                  <span>Monthly rent</span>
+                                  <strong>
+                                    {money(Number(unit.rent))}
+                                  </strong>
+                                </div>
+
+                                <div>
+                                  <span>Status</span>
+                                  <strong>
+                                    {unit.status === 'OCCUPIED'
+                                      ? 'Occupied'
+                                      : 'Available'}
+                                  </strong>
+                                </div>
+
+                                <div>
+                                  <span>Configuration</span>
+                                  <strong>
+                                    {getDetails(unit)}
+                                  </strong>
+                                </div>
+                              </div>
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+
+                      {editingId === unit.id && (
+                        <tr className="unit-edit-row">
+                          <td colSpan={7}>
+                            <form
+                              className="unit-edit-form"
+                              onSubmit={(event) =>
+                                save(unit, event)
+                              }
+                            >
+                              <div>
+                                <label>
+                                  Unit number
+                                  <input
+                                    name="unitNo"
+                                    defaultValue={unit.unitNo}
+                                    required
+                                  />
+                                </label>
+                              </div>
+
+                              <div>
+                                <label>
+                                  Monthly rent
+                                  <input
+                                    name="rent"
+                                    type="number"
+                                    min="0"
+                                    step="0.01"
+                                    defaultValue={unit.rent}
+                                    required
+                                  />
+                                </label>
+                              </div>
+
+                              <div>
+                                <label>
+                                  Status
+                                  <select
+                                    name="status"
+                                    defaultValue={unit.status}
+                                  >
+                                    <option value="AVAILABLE">
+                                      Available
+                                    </option>
+                                    <option value="OCCUPIED">
+                                      Occupied
+                                    </option>
+                                  </select>
+                                </label>
+                              </div>
+
+                              <div className="unit-edit-submit">
+                                <button
+                                  className="primary-button"
+                                  disabled={busy === unit.id}
+                                >
+                                  {busy === unit.id
+                                    ? 'Saving...'
+                                    : 'Save changes'}
+                                </button>
+                              </div>
+                            </form>
+                          </td>
+                        </tr>
+                      )}
+                    </Fragment>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <div className="empty-state">
+              {units.length
+                ? 'No units match the selected filters.'
+                : 'No units yet.'}
+            </div>
+          )}
+        </section>
+      </div>
+    </main>
+  );
 }
 
 function Properties({ token }: { token: string }) {
   const [properties, setProperties] = useState<Array<{ id: string; name: string; address: string; propertyType: string; units: Array<{ id: string; unitNo: string; status: string }> }>>([]); const [message, setMessage] = useState('');
   useEffect(() => { fetch(`${apiUrl}/portfolio/properties`, { headers: { Authorization: `Bearer ${token}` } }).then(async (response) => { if (!response.ok) throw new Error('Unable to load properties.'); return response.json(); }).then(setProperties).catch((reason: Error) => setMessage(reason.message)); }, [token]);
-  return <main className="app-shell"><header className="topbar"><div className="brand"><span className="brand-mark">R</span><span>RMS</span></div><TopNav active="properties" /><a className="primary-button compact" href="/properties/new">+ Add property</a></header><div className="content"><section className="welcome-row"><div><p className="eyebrow">RMS / PORTFOLIO</p><h1>Properties.</h1><p className="subtle">Your owner-scoped buildings and their current units.</p></div></section>{message && <p className="error">{message}</p>}<section className="property-grid">{properties.map((property) => <article className="dashboard-card" key={property.id}><p className="card-kicker">{property.propertyType}</p><h2>{property.name}</h2><p className="subtle">{property.address}</p><div className="property-meta"><strong>{property.units.length}</strong><span>units</span><span>{property.units.filter((unit) => unit.status === 'OCCUPIED').length} occupied</span></div></article>)}{!properties.length && !message && <p className="empty-state">No properties yet. Add your first one to begin.</p>}</section></div></main>;
+  return <main className="app-shell"><header className="topbar"><div className="brand"><span className="brand-mark">R</span><span>RMS</span></div><TopNav active="properties" /><a className="primary-button compact" href="/properties/new">+ Add property</a></header><div className="content"><section className="welcome-row"><div><p className="eyebrow">RMS / PORTFOLIO</p><h1>Properties.</h1><p className="subtle">Your owner-scoped buildings and their current units.</p></div></section>{message && <p className="error">{message}</p>}<section className="property-grid">{properties.map((property) => <article className="dashboard-card" key={property.id}><p className="card-kicker">{property.propertyType}</p><h2>{property.name}</h2><p className="subtle">{property.address}</p><div className="property-meta"><strong>{property.units.length}</strong><span>units</span><span>{property.units.filter((unit) => unit.status === 'OCCUPIED').length} occupied</span></div><div className="report-actions"><a className="quiet-button export-button" href="/units/manage">Manage Units</a><a className="primary-button" href="/units/new">+ Add Unit</a></div></article>)}{!properties.length && !message && <p className="empty-state">No properties yet. Add your first one to begin.</p>}</section></div></main>;
 }
 
 function Tenants({ token }: { token: string }) {
   const [tenants, setTenants] = useState<Array<{ id: string; name: string; phone: string; status: string; unit?: { unitNo: string; property?: { name: string } } }>>([]); const [message, setMessage] = useState('');
   useEffect(() => { fetch(`${apiUrl}/tenants`, { headers: { Authorization: `Bearer ${token}` } }).then(async (response) => { if (!response.ok) throw new Error('Unable to load tenants.'); return response.json(); }).then(setTenants).catch((reason: Error) => setMessage(reason.message)); }, [token]);
-  return <main className="app-shell"><header className="topbar"><div className="brand"><span className="brand-mark">R</span><span>RMS</span></div><TopNav active="tenants" /><a className="quiet-button" href="/profile">Profile</a><button className="quiet-button" onClick={() => { localStorage.removeItem('rms_access_token'); window.location.href = '/'; }}>Sign out</button></header><div className="content"><section className="welcome-row"><div><p className="eyebrow">RMS / PEOPLE</p><h1>Tenants.</h1><p className="subtle">Active and past tenants across your owner account.</p></div></section>{message && <p className="error">{message}</p>}<section className="tenant-list">{tenants.map((tenant) => <article className="dashboard-card tenant-row" key={tenant.id}><div className="avatar">{tenant.name.slice(0, 1).toUpperCase()}</div><div className="tenant-main"><h2>{tenant.name}</h2><p>{tenant.phone}</p></div><div className="tenant-unit"><strong>{tenant.unit?.property?.name ?? 'Past tenancy'}</strong><span>{tenant.unit?.unitNo ?? 'No current unit'}</span></div><span className={`tenant-status ${tenant.status.toLowerCase()}`}>{tenant.status.replace('_', ' ')}</span></article>)}{!tenants.length && !message && <p className="empty-state">No tenants yet.</p>}</section></div></main>;
+  return <main className="app-shell"><header className="topbar"><div className="brand"><span className="brand-mark">R</span><span>RMS</span></div><TopNav active="tenants" /><a className="quiet-button" href="/profile">Profile</a><button className="quiet-button" onClick={() => { localStorage.removeItem('rms_access_token'); window.location.href = '/'; }}>Sign out</button></header><div className="content"><section className="welcome-row"><div><p className="eyebrow">RMS / PEOPLE</p><h1>Tenants.</h1><p className="subtle">Active and past tenants across your owner account.</p></div><a className="primary-button compact" href="/tenants/new">+ Add tenant</a></section>{message && <p className="error">{message}</p>}<section className="tenant-list">{tenants.map((tenant) => <article className="dashboard-card tenant-row" key={tenant.id}><div className="avatar">{tenant.name.slice(0, 1).toUpperCase()}</div><div className="tenant-main"><h2>{tenant.name}</h2><p>{tenant.phone}</p></div><div className="tenant-unit"><strong>{tenant.unit?.property?.name ?? 'Past tenancy'}</strong><span>{tenant.unit?.unitNo ?? 'No current unit'}</span></div><span className={`tenant-status ${tenant.status.toLowerCase()}`}>{tenant.status.replace('_', ' ')}</span>{tenant.status === 'ACTIVE' && (<a className="quiet-button export-button" href={`/tenants/move-out?tenantId=${tenant.id}`}>Move out</a>)}</article>)}{!tenants.length && !message && <p className="empty-state">No tenants yet.</p>}</section></div></main>;
 }
 
 function AddTenant({ token }: { token: string }) {
-  const [units, setUnits] = useState<Array<{ id: string; unitNo: string; status: string; property: { name: string } }>>([]); const [fields, setFields] = useState({ unitId: '', name: '', phone: '', email: '', address: '', moveInDate: new Date().toISOString().slice(0, 10), monthlyRent: '', securityDeposit: '' }); const [message, setMessage] = useState(''); const [busy, setBusy] = useState(false);
-  useEffect(() => { fetch(`${apiUrl}/portfolio/properties`, { headers: { Authorization: `Bearer ${token}` } }).then((response) => response.json()).then((properties: Array<{ name: string; units: Array<{ id: string; unitNo: string; status: string }> }>) => setUnits(properties.flatMap((property) => property.units.filter((unit) => unit.status === 'AVAILABLE').map((unit) => ({ ...unit, property: { name: property.name } }))))).catch(() => setMessage('Unable to load available units.')); }, [token]);
-  async function submit(event: FormEvent) { event.preventDefault(); setBusy(true); setMessage(''); try { const csrfResponse = await fetch(`${apiUrl}/auth/csrf`, { credentials: 'include' }); const { csrfToken } = await csrfResponse.json(); const response = await fetch(`${apiUrl}/tenants`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}`, 'X-CSRF-Token': csrfToken }, credentials: 'include', body: JSON.stringify({ ...fields, monthlyRent: Number(fields.monthlyRent), securityDeposit: Number(fields.securityDeposit), email: fields.email || undefined }) }); const body = await response.json(); if (!response.ok) throw new Error(Array.isArray(body.message) ? body.message.join(', ') : body.message ?? 'Unable to add tenant.'); window.location.href = '/tenants'; } catch (reason) { setMessage(reason instanceof Error ? reason.message : 'Unable to add tenant.'); } finally { setBusy(false); } }
+  const [units, setUnits] = useState<Array<{id: string;unitNo: string;status: string;rent: string;property: { name: string };}>>([]); const [fields, setFields] = useState({ unitId: '', name: '', phone: '', email: '', address: '', moveInDate: new Date().toISOString().slice(0, 10), securityDeposit: '' }); const [message, setMessage] = useState(''); const [busy, setBusy] = useState(false);
+  useEffect(() => { fetch(`${apiUrl}/portfolio/properties`, { headers: { Authorization: `Bearer ${token}` } }).then((response) => response.json()).then((properties: Array<{name: string;units: Array<{id: string;unitNo: string;status: string;rent: string;}>;}>) => setUnits(properties.flatMap((property) => property.units.filter((unit) => unit.status === 'AVAILABLE').map((unit) => ({ ...unit, property: { name: property.name } }))))).catch(() => setMessage('Unable to load available units.')); }, [token]);
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    setBusy(true);
+    setMessage('');
+
+    try {
+      const selectedUnit = units.find((unit) => unit.id === fields.unitId);
+      if (!selectedUnit) {
+        throw new Error('Please select an available unit.');
+      }
+
+      const monthlyRent = selectedUnit.rent;
+
+      const csrfResponse = await fetch(`${apiUrl}/auth/csrf`, { credentials: 'include' }); const { csrfToken } = await csrfResponse.json(); const response = await fetch(`${apiUrl}/tenants`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}`, 'X-CSRF-Token': csrfToken }, credentials: 'include', body: JSON.stringify({...fields,monthlyRent: Number(monthlyRent),securityDeposit: Number(fields.securityDeposit),email: fields.email || undefined}) }); const body = await response.json(); if (!response.ok) throw new Error(Array.isArray(body.message) ? body.message.join(', ') : body.message ?? 'Unable to add tenant.'); window.location.href = '/tenants'; } catch (reason) { setMessage(reason instanceof Error ? reason.message : 'Unable to add tenant.'); } finally { setBusy(false); } }
   const update = (key: keyof typeof fields) => (event: ChangeEvent<HTMLInputElement | HTMLSelectElement>) => setFields({ ...fields, [key]: event.target.value });
-  return <main className="auth-shell"><section className="auth-intro"><p className="eyebrow">RMS / TENANCY</p><h1>Give the lease a clear beginning.</h1><p className="lede">An available unit becomes occupied and receives an active dated lease in one transaction.</p></section><form className="auth-card" onSubmit={submit}><p className="card-kicker">New tenancy</p><h2>Add tenant</h2><label>Available unit<select value={fields.unitId} onChange={update('unitId')} required><option value="">Choose a unit</option>{units.map((unit) => <option value={unit.id} key={unit.id}>{unit.property.name} / {unit.unitNo}</option>)}</select></label><label>Name<input value={fields.name} onChange={update('name')} required /></label><label>Phone<input value={fields.phone} onChange={update('phone')} required /></label><label>Email<input type="email" value={fields.email} onChange={update('email')} /></label><label>Address<input value={fields.address} onChange={update('address')} required /></label><label>Move-in date<input type="date" value={fields.moveInDate} onChange={update('moveInDate')} required /></label><label>Monthly rent<input type="number" min="0" step="0.01" value={fields.monthlyRent} onChange={update('monthlyRent')} required /></label><label>Security deposit<input type="number" min="0" step="0.01" value={fields.securityDeposit} onChange={update('securityDeposit')} required /></label>{message && <p className="error">{message}</p>}<button className="primary-button" disabled={busy || !units.length}>{busy ? 'Creating lease...' : 'Add tenant'} <span>↗</span></button><p className="form-note"><a href="/tenants">Return to tenants.</a></p></form></main>;
+  return <main className="auth-shell"><section className="auth-intro"><p className="eyebrow">RMS / TENANCY</p><h1>Give the lease a clear beginning.</h1><p className="lede">An available unit becomes occupied and receives an active dated lease in one transaction.</p></section><form className="auth-card" onSubmit={submit}><p className="card-kicker">New tenancy</p><h2>Add tenant</h2><label>Available unit<select value={fields.unitId} onChange={update('unitId')} required><option value="">Choose a unit</option>{units.map((unit) => <option value={unit.id} key={unit.id}>{unit.property.name} / {unit.unitNo}</option>)}</select></label><label>Name<input value={fields.name} onChange={update('name')} required /></label><label>Phone<input value={fields.phone} onChange={update('phone')} required /></label><label>Email<input type="email" value={fields.email} onChange={update('email')} /></label><label>Address<input value={fields.address} onChange={update('address')} required /></label><label>Move-in date<input type="date" value={fields.moveInDate} onChange={update('moveInDate')} required /></label><label>Monthly rent<input type="number" min="0" step="0.01" value={units.find((unit) => unit.id === fields.unitId)?.rent ?? ''} readOnly placeholder="Select a unit first" /></label><label>Security deposit<input type="number" min="0" step="0.01" value={fields.securityDeposit} onChange={update('securityDeposit')} required /></label>{message && <p className="error">{message}</p>}<button className="primary-button" disabled={busy || !units.length}>{busy ? 'Creating lease...' : 'Add tenant'} <span>↗</span></button><p className="form-note"><a href="/tenants">Return to tenants.</a></p></form></main>;
 }
 
 function MoveOut({ token }: { token: string }) {
@@ -194,16 +834,148 @@ function GenerateBills({ token }: { token: string }) {
 }
 
 function Payments({ token }: { token: string }) {
-  const [bills, setBills] = useState<Array<{ id: string; billMonth: string; status: string; total: string; paidAmount: string; dueDate: string; lease: { tenant: { name: string } }; unit: { unitNo: string; property: { name: string } } }>>([]); const [message, setMessage] = useState('');
-  useEffect(() => { fetch(`${apiUrl}/billing/bills`, { headers: { Authorization: `Bearer ${token}` } }).then(async (response) => { if (!response.ok) throw new Error('Unable to load bills.'); return response.json(); }).then(setBills).catch((reason: Error) => setMessage(reason.message)); }, [token]);
-  return <main className="app-shell"><header className="topbar"><div className="brand"><span className="brand-mark">R</span><span>RMS</span></div><TopNav active="payments" /><a className="quiet-button" href="/profile">Profile</a><button className="quiet-button" onClick={() => { localStorage.removeItem('rms_access_token'); window.location.href = '/'; }}>Sign out</button></header><div className="content"><section className="welcome-row"><div><p className="eyebrow">RMS / CASH FLOW</p><h1>Payments.</h1><p className="subtle">Bills and outstanding balances across your portfolio.</p></div></section>{message && <p className="error">{message}</p>}<section className="bill-list">{bills.map((bill) => <article className="dashboard-card bill-row" key={bill.id}><div className="bill-main"><p className="card-kicker">{bill.billMonth.slice(0, 7)} · {bill.unit.property.name} / {bill.unit.unitNo}</p><h2>{bill.lease.tenant.name}</h2><small>Due {new Date(bill.dueDate).toLocaleDateString()}</small></div><div className="bill-amount"><strong>{money(bill.total)}</strong><span>Open {money(Math.max(0, Number(bill.total) - Number(bill.paidAmount)))}</span></div><span className={`bill-status ${bill.status.toLowerCase()}`}>{bill.status}</span></article>)}{!bills.length && !message && <p className="empty-state">No bills yet. Generate the current month’s bills from the billing engine.</p>}</section></div></main>;
+  const [bills, setBills] = useState<Array<{ id: string; billMonth: string; status: string; houseRent: string; electricity: string; water: string; gas: string; otherBills: string; fine: string; discount: string; total: string; paidAmount: string; dueDate: string; receiptNo: string | null; lease: { tenant: { name: string } }; unit: { unitNo: string; property: { name: string } }; payments: Array<{ id: string; amount: string; paidOn: string; method: string; notes: string | null; recordedBy: { id: string; name: string; email: string } }> }>>([]); const [message, setMessage] = useState(''); const [search, setSearch] = useState(''); const [statusFilter, setStatusFilter] = useState('ALL'); const [monthFilter, setMonthFilter] = useState('ALL'); const [selectedPayment, setSelectedPayment] = useState<{ payment: { id: string; amount: string; paidOn: string; method: string; notes: string | null; recordedBy: { id: string; name: string; email: string } }; bill: { id: string; billMonth: string; receiptNo: string | null; lease: { tenant: { name: string } }; unit: { unitNo: string; property: { name: string } } } } | null>(null); const [editFields, setEditFields] = useState({ amount: '', paidOn: '', method: 'CASH', notes: '' }); const [busy, setBusy] = useState(false);
+
+  useEffect(() => { fetch(`${apiUrl}/billing/bills`, { headers: { Authorization: `Bearer ${token}` } }).then(async (response) => { if (!response.ok) throw new Error('Unable to load payment data.'); return response.json(); }).then(setBills).catch((reason: Error) => setMessage(reason.message)); }, [token]);
+
+  const months = Array.from(new Set(bills.map((bill) => bill.billMonth.slice(0, 7)))).sort().reverse();
+
+  const filteredBills = bills.filter((bill) => {
+    const query = search.trim().toLowerCase();
+    const matchesSearch = !query || bill.lease.tenant.name.toLowerCase().includes(query) || bill.unit.unitNo.toLowerCase().includes(query) || bill.unit.property.name.toLowerCase().includes(query);
+    const matchesStatus = statusFilter === 'ALL' || bill.status === statusFilter;
+    const matchesMonth = monthFilter === 'ALL' || bill.billMonth.slice(0, 7) === monthFilter;
+    return matchesSearch && matchesStatus && matchesMonth;
+  });
+
+  const paymentHistory = filteredBills.flatMap((bill) => bill.payments.map((payment, index) => ({
+    payment,
+    bill,
+    isLatest: index === 0
+  })));
+
+  const totalBilled = bills.reduce((sum, bill) => sum + Number(bill.total), 0);
+  const totalPaid = bills.reduce((sum, bill) => sum + Number(bill.paidAmount), 0);
+  const totalOutstanding = Math.max(0, totalBilled - totalPaid);
+  const paidBills = bills.filter((bill) => bill.status === 'PAID').length;
+  const openBills = bills.filter((bill) => bill.status !== 'PAID').length;
+
+  async function undoLatestPayment(billId: string) {
+    if (!window.confirm('Undo the latest payment for this bill? This cannot be undone automatically.')) return;
+
+    setBusy(true);
+    setMessage('');
+
+    try {
+      const csrfResponse = await fetch(`${apiUrl}/auth/csrf`, { credentials: 'include' });
+      const { csrfToken } = await csrfResponse.json();
+
+      const response = await fetch(`${apiUrl}/billing/bills/${billId}/undo-latest-payment`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'X-CSRF-Token': csrfToken
+        },
+        credentials: 'include'
+      });
+
+      const body = await response.json();
+
+      if (!response.ok) {
+        throw new Error(Array.isArray(body.message) ? body.message.join(', ') : body.message ?? 'Unable to undo payment.');
+      }
+
+      const refresh = await fetch(`${apiUrl}/billing/bills`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+
+      if (!refresh.ok) throw new Error('Payment was changed, but the payment list could not be refreshed.');
+
+      setBills(await refresh.json());
+      setSelectedPayment(null);
+    } catch (reason) {
+      setMessage(reason instanceof Error ? reason.message : 'Unable to undo payment.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function openPayment(payment: typeof paymentHistory[number]['payment'], bill: typeof paymentHistory[number]['bill']) {
+    setSelectedPayment({ payment, bill });
+    setEditFields({
+      amount: Number(payment.amount).toFixed(2),
+      paidOn: payment.paidOn.slice(0, 10),
+      method: payment.method,
+      notes: payment.notes ?? ''
+    });
+  }
+
+  async function correctPayment(event: FormEvent) {
+    event.preventDefault();
+
+    if (!selectedPayment) return;
+
+    setBusy(true);
+    setMessage('');
+
+    try {
+      const amount = Number(editFields.amount);
+
+      if (amount <= 0) {
+        throw new Error('Payment amount must be greater than zero.');
+      }
+
+      const csrfResponse = await fetch(`${apiUrl}/auth/csrf`, { credentials: 'include' });
+      const { csrfToken } = await csrfResponse.json();
+
+      const response = await fetch(`${apiUrl}/billing/payments/${selectedPayment.payment.id}`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+          'X-CSRF-Token': csrfToken
+        },
+        credentials: 'include',
+        body: JSON.stringify({
+          amount,
+          paidOn: editFields.paidOn,
+          method: editFields.method,
+          notes: editFields.notes || undefined
+        })
+      });
+
+      const body = await response.json();
+
+      if (!response.ok) {
+        throw new Error(Array.isArray(body.message) ? body.message.join(', ') : body.message ?? 'Unable to correct payment.');
+      }
+
+      const refresh = await fetch(`${apiUrl}/billing/bills`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+
+      if (!refresh.ok) throw new Error('Payment was corrected, but the payment list could not be refreshed.');
+
+      setBills(await refresh.json());
+      setSelectedPayment(null);
+      setMessage('Payment corrected successfully.');
+    } catch (reason) {
+      setMessage(reason instanceof Error ? reason.message : 'Unable to correct payment.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return <main className="app-shell"><header className="topbar"><div className="brand"><span className="brand-mark">R</span><span>RMS</span></div><TopNav active="payments" /><a className="quiet-button" href="/profile">Profile</a><button className="quiet-button" onClick={() => { localStorage.removeItem('rms_access_token'); window.location.href = '/'; }}>Sign out</button></header><div className="content"><section className="welcome-row"><div><p className="eyebrow">RMS / BILLING</p><h1>Payments.</h1><p className="subtle">Track bills, collections, outstanding rent, and payment activity across your portfolio.</p></div><div className="report-actions"><a className="quiet-button export-button" href="/billing/defaults">Billing defaults</a><a className="primary-button compact" href="/billing/generate">Generate bills</a></div></section>{message && <p className="error">{message}</p>}<section className="metric-grid"><Metric label="Total billed" value={money(totalBilled)} note={`${bills.length} bills`} accent="blue" /><Metric label="Collected" value={money(totalPaid)} note={`${paidBills} paid bills`} accent="green" /><Metric label="Outstanding" value={money(totalOutstanding)} note={`${openBills} open bills`} accent="amber" /></section><section className="dashboard-card payment-list-card"><div className="section-heading"><div><p className="card-kicker">Bill ledger</p><h2>Monthly bills</h2></div><span className="subtle">{filteredBills.length} of {bills.length}</span></div><div className="payment-toolbar"><label className="payment-search">Search<input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Tenant, property, or unit" /></label><label>Month<select value={monthFilter} onChange={(event) => setMonthFilter(event.target.value)}><option value="ALL">All months</option>{months.map((month) => <option value={month} key={month}>{month}</option>)}</select></label><label>Status<select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}><option value="ALL">All statuses</option><option value="DUE">Due</option><option value="PARTIAL">Partial</option><option value="PAID">Paid</option><option value="LATE">Late</option></select></label></div><div className="payment-table-wrap"><table className="payment-table"><thead><tr><th>Bill</th><th>Tenant</th><th>Unit</th><th>Total</th><th>Paid</th><th>Outstanding</th><th>Due</th><th>Status</th><th>Action</th></tr></thead><tbody>{filteredBills.map((bill) => { const outstanding = Math.max(0, Number(bill.total) - Number(bill.paidAmount)); return <tr key={bill.id}><td><strong>{bill.billMonth.slice(0, 7)}</strong><small>{bill.unit.property.name}</small></td><td>{bill.lease.tenant.name}</td><td>{bill.unit.unitNo}</td><td><strong>{money(Number(bill.total))}</strong></td><td>{money(Number(bill.paidAmount))}</td><td><strong>{money(outstanding)}</strong></td><td>{new Date(bill.dueDate).toLocaleDateString()}</td><td><span className={`bill-status ${bill.status.toLowerCase()}`}>{bill.status}</span></td><td>{bill.status !== 'PAID' && outstanding > 0 ? <a className="quiet-button export-button" href={`/payments/record?billId=${bill.id}`}>Record payment</a> : <span className="subtle">Settled</span>}</td></tr>; })}</tbody></table></div>{!filteredBills.length && !message && <p className="empty-state">{bills.length ? 'No bills match your filters.' : 'No bills yet. Generate the current month’s bills from the billing engine.'}</p>}</section><section className="dashboard-card payment-list-card"><div className="section-heading"><div><p className="card-kicker">Collection history</p><h2>Payment history</h2></div><span className="subtle">{paymentHistory.length} payments</span></div><div className="payment-table-wrap"><table className="payment-table"><thead><tr><th>Date</th><th>Receipt</th><th>Tenant</th><th>Unit</th><th>Bill month</th><th>Amount</th><th>Method</th><th>Recorded by</th><th>Action</th></tr></thead><tbody>{paymentHistory.map(({ payment, bill, isLatest }) => <tr key={payment.id}><td>{new Date(payment.paidOn).toLocaleDateString()}</td><td>{bill.receiptNo ?? <span className="subtle">—</span>}</td><td>{bill.lease.tenant.name}</td><td>{bill.unit.unitNo}</td><td>{bill.billMonth.slice(0, 7)}</td><td><strong>{money(Number(payment.amount))}</strong></td><td>{payment.method.replace('_', ' ')}</td><td>{payment.recordedBy.name}</td><td><div className="report-actions"><button className="quiet-button export-button" type="button" onClick={() => openPayment(payment, bill)}>View / correct</button>{isLatest && <button className="quiet-button export-button" type="button" disabled={busy} onClick={() => undoLatestPayment(bill.id)}>Undo latest</button>}</div></td></tr>)}</tbody></table></div>{!paymentHistory.length && <p className="empty-state">No payments have been recorded yet.</p>}</section>{selectedPayment && <section className="dashboard-card payment-list-card payment-correction-card"><div className="section-heading"><div><p className="card-kicker">Payment details</p><h2>View / correct payment</h2></div><button className="quiet-button" type="button" onClick={() => setSelectedPayment(null)}>Close</button></div><div className="payment-summary"><div><span>Tenant</span><strong>{selectedPayment.bill.lease.tenant.name}</strong></div><div><span>Property / Unit</span><strong>{selectedPayment.bill.unit.property.name} / {selectedPayment.bill.unit.unitNo}</strong></div><div><span>Billing month</span><strong>{selectedPayment.bill.billMonth.slice(0, 7)}</strong></div><div><span>Payment ID</span><strong>{selectedPayment.payment.id}</strong></div></div><form className="payment-correction-form" onSubmit={correctPayment}><label>Amount<input type="number" min="0.01" step="0.01" value={editFields.amount} onChange={(event) => setEditFields({ ...editFields, amount: event.target.value })} required /></label><label>Paid on<input type="date" value={editFields.paidOn} onChange={(event) => setEditFields({ ...editFields, paidOn: event.target.value })} required /></label><label>Method<select value={editFields.method} onChange={(event) => setEditFields({ ...editFields, method: event.target.value })}><option value="CASH">Cash</option><option value="BANK_TRANSFER">Bank transfer</option><option value="CARD">Card</option><option value="OTHER">Other</option></select></label><label>Notes<textarea value={editFields.notes} onChange={(event) => setEditFields({ ...editFields, notes: event.target.value })} rows={3} /></label><div className="report-actions"><button className="quiet-button" type="button" onClick={() => setSelectedPayment(null)}>Cancel</button><button className="primary-button compact" disabled={busy}>{busy ? 'Saving...' : 'Save correction'} <span>↗</span></button></div></form></section>}</div></main>;
 }
 
 function RecordPayment({ token }: { token: string }) {
-  const billId = new URLSearchParams(window.location.search).get('billId') ?? ''; const [fields, setFields] = useState({ amount: '', paidOn: new Date().toISOString().slice(0, 10), method: 'CASH', electricity: '', water: '', gas: '', otherBills: '', fine: '', discount: '', notes: '' }); const [message, setMessage] = useState(''); const [busy, setBusy] = useState(false);
+  const billId = new URLSearchParams(window.location.search).get('billId') ?? ''; const [bill, setBill] = useState<{ id: string; billMonth: string; status: string; houseRent: string; electricity: string; water: string; gas: string; otherBills: string; fine: string; discount: string; total: string; paidAmount: string; dueDate: string; lease: { tenant: { name: string } }; unit: { unitNo: string; property: { name: string } } } | null>(null); const [fields, setFields] = useState({ amount: '', paidOn: new Date().toISOString().slice(0, 10), method: 'CASH', notes: '' }); const [message, setMessage] = useState(''); const [busy, setBusy] = useState(false);
+  useEffect(() => { if (!billId) { setMessage('No bill selected.'); return; } fetch(`${apiUrl}/billing/bills`, { headers: { Authorization: `Bearer ${token}` } }).then(async (response) => { if (!response.ok) throw new Error('Unable to load bill.'); return response.json(); }).then((bills: Array<{ id: string; billMonth: string; status: string; houseRent: string; electricity: string; water: string; gas: string; otherBills: string; fine: string; discount: string; total: string; paidAmount: string; dueDate: string; lease: { tenant: { name: string } }; unit: { unitNo: string; property: { name: string } } }>) => { const selectedBill = bills.find((item) => item.id === billId); if (!selectedBill) throw new Error('Bill not found.'); setBill(selectedBill); setFields((current) => ({ ...current, amount: Math.max(0, Number(selectedBill.total) - Number(selectedBill.paidAmount)).toFixed(2) })); }).catch((error: Error) => setMessage(error.message)); }, [billId, token]);
   const update = (key: keyof typeof fields) => (event: ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) => setFields({ ...fields, [key]: event.target.value });
-  async function submit(event: FormEvent) { event.preventDefault(); setBusy(true); setMessage(''); try { const csrfResponse = await fetch(`${apiUrl}/auth/csrf`, { credentials: 'include' }); const { csrfToken } = await csrfResponse.json(); const numericFields = ['amount', 'electricity', 'water', 'gas', 'otherBills', 'fine', 'discount']; const payload = Object.fromEntries(Object.entries(fields).map(([key, value]) => [key, numericFields.includes(key) ? (value === '' ? undefined : Number(value)) : value])); const response = await fetch(`${apiUrl}/billing/bills/${billId}/payments`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}`, 'X-CSRF-Token': csrfToken }, credentials: 'include', body: JSON.stringify(payload) }); const body = await response.json(); if (!response.ok) throw new Error(Array.isArray(body.message) ? body.message.join(', ') : body.message ?? 'Unable to record payment.'); window.location.href = '/payments'; } catch (reason) { setMessage(reason instanceof Error ? reason.message : 'Unable to record payment.'); } finally { setBusy(false); } }
-  return <main className="auth-shell"><section className="auth-intro"><p className="eyebrow">RMS / BILLING</p><h1>Make the ledger tell the truth.</h1><p className="lede">Record the payment and the month’s actual utilities together. Every installment stays in the payment history.</p></section><form className="auth-card" onSubmit={submit}><p className="card-kicker">Bill payment</p><h2>Record payment</h2><label>Amount<input type="number" min="0" step="0.01" value={fields.amount} onChange={update('amount')} required /></label><label>Paid on<input type="date" value={fields.paidOn} onChange={update('paidOn')} required /></label><label>Method<select value={fields.method} onChange={update('method')}><option value="CASH">Cash</option><option value="BANK_TRANSFER">Bank transfer</option><option value="CARD">Card</option><option value="OTHER">Other</option></select></label><div className="form-section"><p className="card-kicker">Actual bill values</p>{(['electricity', 'water', 'gas', 'otherBills', 'fine', 'discount'] as const).map((key) => <label key={key}>{key.replace(/([A-Z])/g, ' $1')}<input type="number" min="0" step="0.01" value={fields[key]} onChange={update(key)} /></label>)}</div><label>Notes<textarea value={fields.notes} onChange={update('notes')} rows={3} /></label>{message && <p className="error">{message}</p>}<button className="primary-button" disabled={busy || !billId}>{busy ? 'Recording...' : 'Record payment'} <span>↗</span></button><p className="form-note"><a href="/payments">Return to payments.</a></p></form></main>;
+  const totalAmount = bill ? Number(bill.houseRent) + Number(bill.electricity) + Number(bill.water) + Number(bill.gas) + Number(bill.otherBills) + Number(bill.fine) - Number(bill.discount) : 0; const alreadyPaid = bill ? Number(bill.paidAmount) : 0; const outstanding = Math.max(0, totalAmount - alreadyPaid);
+  async function submit(event: FormEvent) { event.preventDefault(); setBusy(true); setMessage(''); try { if (!bill) throw new Error('Bill information is not available.'); const paymentAmount = Number(fields.amount); if (paymentAmount <= 0) throw new Error('Payment amount must be greater than zero.'); if (paymentAmount > outstanding) throw new Error(`Payment cannot exceed the outstanding amount of ${money(outstanding)}.`); const csrfResponse = await fetch(`${apiUrl}/auth/csrf`, { credentials: 'include' }); const { csrfToken } = await csrfResponse.json(); const payload = { amount: paymentAmount, paidOn: fields.paidOn, method: fields.method, notes: fields.notes || undefined }; const response = await fetch(`${apiUrl}/billing/bills/${billId}/payments`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}`, 'X-CSRF-Token': csrfToken }, credentials: 'include', body: JSON.stringify(payload) }); const body = await response.json(); if (!response.ok) throw new Error(Array.isArray(body.message) ? body.message.join(', ') : body.message ?? 'Unable to record payment.'); window.location.href = '/payments'; } catch (reason) { setMessage(reason instanceof Error ? reason.message : 'Unable to record payment.'); } finally { setBusy(false); } }
+  return <main className="auth-shell"><section className="auth-intro"><p className="eyebrow">RMS / BILLING</p><h1>Settle the bill clearly.</h1><p className="lede">Review the bill first, then record the amount actually received. Partial payments remain part of the payment history.</p></section><form className="auth-card" onSubmit={submit}><p className="card-kicker">Bill payment</p><h2>Record payment</h2>{bill && <><div className="form-section"><p className="card-kicker">Bill information</p><div className="payment-summary"><div><span>Tenant</span><strong>{bill.lease.tenant.name}</strong></div><div><span>Property / Unit</span><strong>{bill.unit.property.name} / {bill.unit.unitNo}</strong></div><div><span>Billing month</span><strong>{bill.billMonth.slice(0, 7)}</strong></div><div><span>Due date</span><strong>{new Date(bill.dueDate).toLocaleDateString()}</strong></div></div></div><div className="form-section"><p className="card-kicker">Bill details</p><label>Rent<input type="number" value={bill.houseRent} readOnly /></label><label>Electricity<input type="number" value={bill.electricity} readOnly /></label><label>Water<input type="number" value={bill.water} readOnly /></label><label>Gas<input type="number" value={bill.gas} readOnly /></label><label>Other bills<input type="number" value={bill.otherBills} readOnly /></label><label>Fine<input type="number" value={bill.fine} readOnly /></label><label>Discount<input type="number" value={bill.discount} readOnly /></label><label>Total amount<input type="number" value={totalAmount.toFixed(2)} readOnly /></label><div className="payment-balance"><span>Already paid</span><strong>{money(alreadyPaid)}</strong><span>Outstanding</span><strong>{money(outstanding)}</strong></div></div></>}{bill && <div className="form-section"><p className="card-kicker">Payment</p><label>Amount to pay<input type="number" min="0.01" max={outstanding} step="0.01" value={fields.amount} onChange={update('amount')} required /></label><label>Paid on<input type="date" value={fields.paidOn} onChange={update('paidOn')} required /></label><label>Method<select value={fields.method} onChange={update('method')}><option value="CASH">Cash</option><option value="BANK_TRANSFER">Bank transfer</option><option value="CARD">Card</option><option value="OTHER">Other</option></select></label><label>Notes<textarea value={fields.notes} onChange={update('notes')} rows={3} /></label></div>}{message && <p className="error">{message}</p>}<button className="primary-button" disabled={busy || !bill || outstanding <= 0}>{busy ? 'Recording...' : outstanding <= 0 ? 'Bill fully paid' : 'Record payment'} <span>↗</span></button><p className="form-note"><a href="/payments">Return to payments.</a></p></form></main>;
 }
 
 function Reports({ token }: { token: string }) {
@@ -370,10 +1142,28 @@ function Dashboard({ summary, firstName, onSignOut }: { summary: Summary; firstN
   const timeLabel = now.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
   const greeting = greetingForHour(now.getHours());
   const max = Math.max(...summary.monthlyIncomeTrend.map((item) => Number(item.income)), 1); const occupancy = summary.totalUnits ? summary.occupiedUnits / summary.totalUnits * 100 : 0;
-  return <main className="app-shell"><header className="topbar"><div className="brand"><span className="brand-mark">R</span><span>RMS</span></div><TopNav active="overview" /><a className="quiet-button" href="/profile">Profile</a><button className="quiet-button" onClick={onSignOut}>Sign out</button></header><div className="content" id="overview"><section className="welcome-row"><div><p className="eyebrow">{dateLabel} · {timeLabel}</p><h1>{greeting}, {firstName || 'there'}.</h1><p className="subtle">Here is the pulse of your portfolio this month.</p></div><button className="primary-button compact">+ Add property</button></section><section className="metric-grid"><Metric label="This month income" value={money(summary.thisMonthIncome)} note="Net house rent" accent="green" /><Metric label="Total outstanding" value={money(summary.totalOutstanding)} note="Across all open bills" accent="amber" /><Metric label="This month due" value={money(summary.thisMonthDue)} note="Current billing month" accent="blue" /><Metric label="Net profit" value={money(summary.thisMonthNetProfit)} note="After owner repairs" accent="rose" /></section><section className="dashboard-grid"><article className="dashboard-card trend-card"><div className="card-heading"><div><p className="card-kicker">Cash flow</p><h2>Income trend</h2></div><span className="range-label">Last 6 months</span></div><div className="bars">{summary.monthlyIncomeTrend.map((item) => <div className="bar-group" key={item.month}><div className="bar-track"><div className="bar" style={{ height: `${Math.max(5, Number(item.income) / max * 100)}%` }} /></div><span>{item.month.slice(5)}</span></div>)}</div></article><article className="dashboard-card occupancy-card"><div className="card-heading"><div><p className="card-kicker">Occupancy</p><h2>Units at a glance</h2></div><span className="occupancy-rate">{Math.round(occupancy)}%</span></div><div className="occupancy-number">{summary.occupiedUnits}<small> / {summary.totalUnits} occupied</small></div><div className="progress"><span style={{ width: `${occupancy}%` }} /></div><div className="legend"><span><i className="dot occupied" />Occupied {summary.occupiedUnits}</span><span><i className="dot available" />Available {summary.availableUnits}</span></div></article><article className="dashboard-card payments-card" id="payments"><div className="card-heading"><div><p className="card-kicker">Recent activity</p><h2>Latest payments</h2></div><a href="#payments">View all</a></div>{summary.recentPayments.length ? summary.recentPayments.slice(0, 5).map((payment) => <div className="payment-row" key={payment.id}><span className="payment-icon">↗</span><div><strong>{payment.method.replace('_', ' ')}</strong><small>{new Date(payment.paidOn).toLocaleDateString()}</small></div><b>{money(payment.amount)}</b></div>) : <p className="empty-state">No payments recorded yet.</p>}</article></section></div></main>;
+  return <main className="app-shell"><header className="topbar"><div className="brand"><span className="brand-mark">R</span><span>RMS</span></div><TopNav active="overview" /><a className="quiet-button" href="/profile">Profile</a><button className="quiet-button" onClick={onSignOut}>Sign out</button></header><div className="content" id="overview"><section className="welcome-row"><div><p className="eyebrow">{dateLabel} · {timeLabel}</p><h1>{greeting}, {firstName || 'there'}.</h1><p className="subtle">Here is the pulse of your portfolio this month.</p></div></section><section className="metric-grid"><Metric label="This month income" value={money(summary.thisMonthIncome)} note="Net house rent" accent="green" /><Metric label="Total outstanding" value={money(summary.totalOutstanding)} note="Across all open bills" accent="amber" /><Metric label="This month due" value={money(summary.thisMonthDue)} note="Current billing month" accent="blue" /><Metric label="Net profit" value={money(summary.thisMonthNetProfit)} note="After owner repairs" accent="rose" /></section><section className="dashboard-grid"><article className="dashboard-card trend-card"><div className="card-heading"><div><p className="card-kicker">Cash flow</p><h2>Income trend</h2></div><span className="range-label">Last 6 months</span></div><div className="bars">{summary.monthlyIncomeTrend.map((item) => <div className="bar-group" key={item.month}><div className="bar-track"><div className="bar" style={{ height: `${Math.max(5, Number(item.income) / max * 100)}%` }} /></div><span>{item.month.slice(5)}</span></div>)}</div></article><article className="dashboard-card occupancy-card"><div className="card-heading"><div><p className="card-kicker">Occupancy</p><h2>Units at a glance</h2></div><span className="occupancy-rate">{Math.round(occupancy)}%</span></div><div className="occupancy-number">{summary.occupiedUnits}<small> / {summary.totalUnits} occupied</small></div><div className="progress"><span style={{ width: `${occupancy}%` }} /></div><div className="legend"><span><i className="dot occupied" />Occupied {summary.occupiedUnits}</span><span><i className="dot available" />Available {summary.availableUnits}</span></div></article><article className="dashboard-card payments-card" id="payments"><div className="card-heading"><div><p className="card-kicker">Recent activity</p><h2>Latest payments</h2></div><a href="#payments">View all</a></div>{summary.recentPayments.length ? summary.recentPayments.slice(0, 5).map((payment) => <div className="payment-row" key={payment.id}><span className="payment-icon">↗</span><div><strong>{payment.method.replace('_', ' ')}</strong><small>{new Date(payment.paidOn).toLocaleDateString()}</small></div><b>{money(payment.amount)}</b></div>) : <p className="empty-state">No payments recorded yet.</p>}</article></section></div></main>;
 }
 
-function Metric({ label, value, note, accent }: { label: string; value: string; note: string; accent: string }) { return <article className={`metric metric-${accent}`}><span className="metric-label">{label}</span><strong>{value}</strong><small>{note}</small></article>; }
+function Metric({
+  label,
+  value,
+  note,
+  accent
+}: {
+  label: string;
+  value: string | number;
+  note?: string;
+  accent?: string;
+}) {
+  return (
+    <article className={`metric${accent ? ` metric-${accent}` : ''}`}>
+      <span className="metric-label">{label}</span>
+      <strong>{value}</strong>
+      {note && <small>{note}</small>}
+    </article>
+  );
+}
 
 type ProfileData = { id: string; email: string; fullName: string; phone: string; themePreference: string; emailVerifiedAt: string | null; createdAt: string };
 

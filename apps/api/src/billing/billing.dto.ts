@@ -8,7 +8,7 @@ export class GenerateBillsDto {
 
 export class RecordPaymentDto {
   @IsNumber({ maxDecimalPlaces: 2 })
-  @Min(0)
+  @Min(0.01)
   amount!: number;
 
   @IsDateString()
@@ -52,6 +52,23 @@ export class RecordPaymentDto {
   notes?: string;
 }
 
+export class CorrectPaymentDto {
+  @IsNumber({ maxDecimalPlaces: 2 })
+  @Min(0.01)
+  amount!: number;
+
+  @IsDateString()
+  paidOn!: string;
+
+  @IsEnum(PaymentMethod)
+  method!: PaymentMethod;
+
+  @IsOptional()
+  @IsString()
+  notes?: string;
+
+}
+
 export class UpdateDefaultsDto {
   @IsNumber({ maxDecimalPlaces: 2 })
   @Min(0)
@@ -59,11 +76,11 @@ export class UpdateDefaultsDto {
 
   @IsNumber({ maxDecimalPlaces: 2 })
   @Min(0)
-  water!: number;
+  gas!: number;
 
   @IsNumber({ maxDecimalPlaces: 2 })
   @Min(0)
-  gas!: number;
+  water!: number;
 
   @IsInt()
   @Min(1)

@@ -1,5 +1,5 @@
 import { ConflictException, Inject, Injectable, NotFoundException } from '@nestjs/common';
-import { BillStatus, Prisma } from '@prisma/client';
+import { BillStatus, PaymentMethod, Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma.service';
 import { calculateBillTotal, determineBillStatus } from './billing.rules';
 import { GenerateBillsDto, RecordPaymentDto } from './billing.dto';
@@ -9,7 +9,7 @@ export class BillingService {
   constructor(@Inject(PrismaService) private readonly prisma: PrismaService) {}
 
   listBills(ownerId: string) {
-    return this.prisma.withOwner(ownerId, (transaction) => transaction.rentBill.findMany({ where: { ownerId }, include: { lease: { include: { tenant: true } }, unit: { include: { property: true } } }, orderBy: [{ status: 'asc' }, { dueDate: 'asc' }] }));
+    return this.prisma.withOwner(ownerId, (transaction) => transaction.rentBill.findMany({ where: { ownerId }, include: { lease: { include: { tenant: true } }, unit: { include: { property: true } }, payments: { include: { recordedBy: { select: { id: true, email: true } } }, orderBy: [{ paidOn: 'desc' }, { createdAt: 'desc' }] } }, orderBy: [{ status: 'asc' }, { dueDate: 'asc' }] }));
   }
 
   async generateBills(ownerId: string, dto: GenerateBillsDto) {
@@ -45,7 +45,7 @@ export class BillingService {
       const paidAmount = aggregate._sum.amount ?? new Prisma.Decimal(0);
       const status = determineBillStatus(total, paidAmount, new Date(dto.paidOn), bill.dueDate);
       const receiptNo = status === BillStatus.PAID && !bill.receiptNo ? await this.nextReceipt(transaction, ownerId, new Date(dto.paidOn).getUTCFullYear()) : bill.receiptNo;
-      const updated = await transaction.rentBill.update({ where: { id: bill.id }, data: { electricity: dto.electricity, water: dto.water, gas: dto.gas, otherBills: dto.otherBills, fine: dto.fine, discount: dto.discount, total, paidAmount, status, paymentDate: status === BillStatus.PAID ? new Date(dto.paidOn) : bill.paymentDate, receiptNo } });
+      const updated = await transaction.rentBill.update({ where: { id: bill.id }, data: { electricity: dto.electricity ?? bill.electricity, water: dto.water ?? bill.water, gas: dto.gas ?? bill.gas, otherBills: dto.otherBills ?? bill.otherBills, fine: dto.fine ?? bill.fine, discount: dto.discount ?? bill.discount, total, paidAmount, status, paymentDate: status === BillStatus.PAID ? new Date(dto.paidOn) : bill.paymentDate, receiptNo } });
       await transaction.auditLog.create({ data: { ownerId, actorUserId: recordedByUserId, action: 'RENT_PAYMENT', details: { billId, amount: dto.amount, status } } });
       return { bill: updated, payment };
     });
@@ -53,7 +53,7 @@ export class BillingService {
 
   async undoLatestPayment(ownerId: string, billId: string) {
     return this.prisma.withOwner(ownerId, async (transaction) => {
-      const bill = await transaction.rentBill.findFirst({ where: { id: billId, ownerId }, include: { payments: { orderBy: { paidOn: 'desc' } } } });
+      const bill = await transaction.rentBill.findFirst({ where: { id: billId, ownerId }, include: { payments: { orderBy: [{ paidOn: 'desc' }, { createdAt: 'desc' }] } } });
       if (!bill) throw new NotFoundException('bill not found');
       if (bill.payments.length === 0) throw new ConflictException('bill has no payments');
       const deletedPayment = bill.payments[0];
@@ -65,6 +65,79 @@ export class BillingService {
       const updated = await transaction.rentBill.update({ where: { id: bill.id }, data: { paidAmount, status, paymentDate: status === BillStatus.PAID ? latestPaidOn : null, receiptNo: status === BillStatus.PAID ? bill.receiptNo : null } });
       await transaction.auditLog.create({ data: { ownerId, actorUserId: ownerId, action: 'PAYMENT_DELETED', details: { billId, paymentId: deletedPayment.id, amount: deletedPayment.amount.toString() } } });
       return updated;
+    });
+  }
+
+    async correctPayment(ownerId: string, paymentId: string, dto: { amount: number; paidOn: string; method: PaymentMethod; notes?: string }, correctedByUserId: string) {
+    return this.prisma.withOwner(ownerId, async (transaction) => {
+      const payment = await transaction.payment.findFirst({ where: { id: paymentId, ownerId }, include: { bill: true } });
+      if (!payment) throw new NotFoundException('payment not found');
+
+      if (dto.amount <= 0) throw new ConflictException('payment amount must be greater than zero');
+
+      const oldPayment = {
+        amount: payment.amount.toString(),
+        paidOn: payment.paidOn.toISOString(),
+        method: payment.method,
+        notes: payment.notes
+      };
+
+      const updatedPayment = await transaction.payment.update({
+        where: { id: paymentId },
+        data: {
+          amount: new Prisma.Decimal(dto.amount),
+          paidOn: new Date(dto.paidOn),
+          method: dto.method,
+          notes: dto.notes
+        }
+      });
+
+      const payments = await transaction.payment.findMany({
+        where: { billId: payment.billId, ownerId },
+        orderBy: [{ paidOn: 'desc' }, { createdAt: 'desc' }]
+      });
+
+      const paidAmount = payments.reduce((sum, item) => sum.add(item.amount), new Prisma.Decimal(0));
+      const latestPaidOn = payments[0]?.paidOn ?? null;
+
+      const status = determineBillStatus(payment.bill.total, paidAmount, latestPaidOn, payment.bill.dueDate);
+
+      const receiptNo = status === BillStatus.PAID
+        ? payment.bill.receiptNo ?? await this.nextReceipt(transaction, ownerId, latestPaidOn?.getUTCFullYear() ?? new Date().getUTCFullYear())
+        : null;
+
+      const updatedBill = await transaction.rentBill.update({
+        where: { id: payment.billId },
+        data: {
+          paidAmount,
+          status,
+          paymentDate: status === BillStatus.PAID ? latestPaidOn : null,
+          receiptNo
+        }
+      });
+
+      await transaction.auditLog.create({
+        data: {
+          ownerId,
+          actorUserId: correctedByUserId,
+          action: 'RENT_PAYMENT',
+          details: {
+            type: 'PAYMENT_CORRECTED',
+            paymentId,
+            billId: payment.billId,
+            oldPayment,
+            newPayment: {
+              amount: dto.amount,
+              paidOn: dto.paidOn,
+              method: dto.method,
+              notes: dto.notes
+            },
+            status
+          }
+        }
+      });
+
+      return { bill: updatedBill, payment: updatedPayment };
     });
   }
 

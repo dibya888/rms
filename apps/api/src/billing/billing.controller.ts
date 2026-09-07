@@ -2,7 +2,7 @@ import { Body, Controller, Get, Inject, Param, Patch, Post, Req, UseGuards } fro
 import type { Request } from 'express';
 import { AccessTokenGuard } from '../auth/access-token.guard';
 import { BillingService } from './billing.service';
-import { GenerateBillsDto, RecordPaymentDto, UpdateDefaultsDto } from './billing.dto';
+import { CorrectPaymentDto, GenerateBillsDto, RecordPaymentDto, UpdateDefaultsDto } from './billing.dto';
 
 type AuthenticatedRequest = Request & { user: { sub: string } };
 
@@ -22,6 +22,9 @@ export class BillingController {
 
   @Post('bills/:billId/undo-latest-payment')
   undo(@Req() request: AuthenticatedRequest, @Param('billId') billId: string) { return this.billing.undoLatestPayment(request.user.sub, billId); }
+
+  @Patch('payments/:paymentId')
+  correctPayment(@Req() request: AuthenticatedRequest, @Param('paymentId') paymentId: string, @Body() dto: CorrectPaymentDto) { return this.billing.correctPayment(request.user.sub, paymentId, dto, request.user.sub); }
 
   @Patch('defaults')
   updateDefaults(@Req() request: AuthenticatedRequest, @Body() values: UpdateDefaultsDto) { return this.billing.updateDefaults(request.user.sub, values); }

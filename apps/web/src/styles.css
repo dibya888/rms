@@ -50,3 +50,452 @@ html[data-theme="dark"] .topbar nav a { border-color: #3a5141; }
 @media (max-width: 600px) { .tenant-row { align-items: start; flex-wrap: wrap; } .tenant-unit { width: calc(100% - 3.5rem); margin-left: 3.5rem; } .tenant-status { margin-left: 3.5rem; } }
 @media (max-width: 480px) { .auth-card { width: calc(100% - 2rem); padding: 2rem 1.3rem; } .metric-grid { grid-template-columns: 1fr; } .content { width: calc(100% - 1.5rem); } .dashboard-card { padding: 1.15rem; } .card-heading h2 { font-size: 1.5rem; } }
 @media (max-width: 600px) { .name-fields { grid-template-columns: 1fr; gap: 0; } .name-fields label:first-child { grid-column: auto; } }
+.unit-toolbar {
+  display: grid;
+  grid-template-columns: 2fr 1fr 1fr 1fr;
+  gap: 16px;
+  align-items: end;
+  margin-bottom: 20px;
+}
+
+.unit-toolbar label {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.unit-search {
+  min-width: 0;
+}
+
+.unit-table-card {
+  overflow: hidden;
+}
+
+.unit-table-wrap {
+  width: 100%;
+  overflow-x: auto;
+}
+
+.unit-table {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 1050px;
+}
+
+.unit-table th {
+  padding: 13px 16px;
+  text-align: left;
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+
+.unit-table td {
+  padding: 16px;
+  border-top: 1px solid var(--border-color, #e5e7eb);
+  vertical-align: middle;
+}
+
+.unit-table tbody tr {
+  transition: background 0.15s ease;
+}
+
+.unit-table tbody tr:hover {
+  background: rgba(127, 127, 127, 0.04);
+}
+
+.unit-details {
+  max-width: 270px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.unit-type-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 5px 9px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.status-available {
+  color: #16803c;
+  background: rgba(22, 128, 60, 0.09);
+}
+
+.status-occupied {
+  color: #2864c7;
+  background: rgba(40, 100, 199, 0.09);
+}
+
+.unit-actions {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  white-space: nowrap;
+}
+
+.danger-button {
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 8px 10px;
+  border-radius: 8px;
+}
+
+.danger-button:hover {
+  background: rgba(220, 38, 38, 0.08);
+}
+
+.danger-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.unit-expanded-row td,
+.unit-edit-row td {
+  padding: 0;
+}
+
+.unit-detail-panel {
+  padding: 22px 24px;
+}
+
+.unit-detail-panel h3 {
+  margin: 5px 0 20px;
+}
+
+.unit-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 18px;
+}
+
+.unit-detail-grid div {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.unit-detail-grid span {
+  font-size: 12px;
+  opacity: 0.65;
+}
+
+.unit-detail-grid strong {
+  font-size: 14px;
+}
+
+.unit-edit-form {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr auto;
+  gap: 16px;
+  padding: 20px 24px;
+  align-items: end;
+}
+
+.unit-edit-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.unit-edit-submit {
+  display: flex;
+  align-items: end;
+}
+
+@media (max-width: 900px) {
+  .unit-toolbar {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .unit-detail-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .unit-edit-form {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+@media (max-width: 600px) {
+  .unit-toolbar {
+    grid-template-columns: 1fr;
+  }
+
+  .unit-detail-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .unit-edit-form {
+    grid-template-columns: 1fr;
+  }
+}
+
+.payment-list-card {
+  overflow: hidden;
+}
+
+.payment-list-card .section-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 24px 24px 18px;
+}
+
+.payment-list-card .section-heading h2 {
+  margin: 5px 0 0;
+}
+
+.payment-toolbar {
+  display: grid;
+  grid-template-columns: 2fr 1fr 1fr;
+  gap: 16px;
+  padding: 0 24px 20px;
+}
+
+.payment-toolbar label {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.payment-search {
+  min-width: 0;
+}
+
+.payment-table-wrap {
+  width: 100%;
+  overflow-x: auto;
+}
+
+.payment-table {
+  width: 100%;
+  min-width: 1050px;
+  border-collapse: collapse;
+}
+
+.payment-table th {
+  padding: 13px 16px;
+  text-align: left;
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+  border-top: 1px solid var(--border-color, #e5e7eb);
+}
+
+.payment-table td {
+  padding: 16px;
+  border-top: 1px solid var(--border-color, #e5e7eb);
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
+.payment-table tbody tr {
+  transition: background 0.15s ease;
+}
+
+.payment-table tbody tr:hover {
+  background: rgba(127, 127, 127, 0.04);
+}
+
+.payment-table td:first-child {
+  min-width: 145px;
+}
+
+.payment-table td:first-child strong {
+  display: block;
+}
+
+.payment-table td:first-child small {
+  display: block;
+  margin-top: 4px;
+  opacity: 0.65;
+}
+
+.payment-table td:nth-child(4),
+.payment-table td:nth-child(5),
+.payment-table td:nth-child(6) {
+  text-align: right;
+}
+
+.payment-table th:nth-child(4),
+.payment-table th:nth-child(5),
+.payment-table th:nth-child(6) {
+  text-align: right;
+}
+
+.payment-table td:last-child {
+  text-align: right;
+}
+
+.payment-table .quiet-button {
+  white-space: nowrap;
+}
+
+.payment-list-card .empty-state {
+  margin: 0 24px 24px;
+}
+
+
+/* Record Payment */
+
+.payment-summary {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 14px;
+  margin-bottom: 4px;
+}
+
+.payment-summary > div {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 14px 16px;
+  border: 1px solid var(--border-color, #e5e7eb);
+  border-radius: 10px;
+}
+
+.payment-summary span,
+.payment-balance span {
+  font-size: 12px;
+  opacity: 0.65;
+}
+
+.payment-summary strong {
+  font-size: 14px;
+}
+
+.payment-balance {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px 20px;
+  margin-top: 18px;
+  padding: 16px;
+  border-radius: 10px;
+  border: 1px solid var(--border-color, #e5e7eb);
+}
+
+.payment-balance strong {
+  text-align: right;
+  font-size: 15px;
+}
+
+.payment-balance span:nth-of-type(2),
+.payment-balance strong:last-child {
+  padding-top: 10px;
+  border-top: 1px solid var(--border-color, #e5e7eb);
+}
+
+@media (max-width: 800px) {
+  .payment-toolbar {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .payment-search {
+    grid-column: 1 / -1;
+  }
+
+  .payment-summary {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 600px) {
+  .payment-toolbar {
+    grid-template-columns: 1fr;
+  }
+
+  .payment-search {
+    grid-column: auto;
+  }
+
+  .payment-list-card .section-heading {
+    align-items: flex-start;
+    padding: 20px 18px 16px;
+  }
+
+  .payment-toolbar {
+    padding: 0 18px 18px;
+  }
+
+  .payment-table td {
+    padding: 13px 14px;
+  }
+}
+
+.payment-correction-card {
+  margin-top: 24px;
+}
+
+.payment-correction-card .section-heading {
+  border-bottom: 1px solid var(--border-color, #e5e7eb);
+}
+
+.payment-correction-form {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 16px;
+  padding: 24px;
+}
+
+.payment-correction-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.payment-correction-form label:last-of-type {
+  grid-column: 1 / -1;
+}
+
+.payment-correction-form .report-actions {
+  grid-column: 1 / -1;
+  justify-content: flex-end;
+  margin-top: 4px;
+}
+
+.payment-correction-form textarea {
+  resize: vertical;
+  min-height: 90px;
+}
+
+@media (max-width: 700px) {
+  .payment-correction-form {
+    grid-template-columns: 1fr;
+  }
+
+  .payment-correction-form label:last-of-type,
+  .payment-correction-form .report-actions {
+    grid-column: auto;
+  }
+}
