@@ -6,11 +6,13 @@ import { randomUUID } from 'node:crypto';
 import { randomBytes } from 'node:crypto';
 import { PrismaService } from '../prisma.service';
 import { EmailService } from '../email.service';
-import { ForgotPasswordDto, LoginDto, RegisterDto, ResetPasswordDto } from './auth.dto';
+import { ForgotPasswordDto, LoginDto, RegisterDto, ResendActivationDto, ResetPasswordDto } from './auth.dto';
 
 const ACCESS_TTL = '15m';
 const REFRESH_DAYS = 7;
 const COMMON_PASSWORDS = new Set(['password123!', 'password123', 'qwerty123!', 'admin12345!']);
+const ACTIVATION_TOKEN_TTL_MS = 60 * 60 * 1000;
+const ACTIVATION_RESEND_COOLDOWN_MS = 5 * 60 * 1000;
 
 @Injectable()
 export class AuthService {
@@ -46,9 +48,7 @@ export class AuthService {
       select: { id: true, email: true, fullName: true, status: true },
     });
 
-    const rawToken = randomBytes(32).toString('hex');
-    const activationToken = await this.prisma.activationToken.create({ data: { userId: user.id, tokenHash: await argon2.hash(rawToken, { type: argon2.argon2id }), expiresAt: new Date(Date.now() + 60 * 60 * 1000) } });
-    await this.email.sendActivationEmail(user.email, `${activationToken.id}.${rawToken}`);
+    await this.issueActivationEmail(user.id, user.email);
 
     return { user, status: 'activation_required' as const };
   }
@@ -64,8 +64,9 @@ export class AuthService {
       throw new UnauthorizedException('account is not active');
     }
     if (!user.emailVerifiedAt) {
-      await this.prisma.auditLog.create({ data: { ownerId: null, actorUserId: user.id, action: 'LOGIN_FAILED', details: { email: user.email, reason: 'email_unverified' } } });
-      throw new UnauthorizedException('email verification is required');
+      const resent = await this.issueActivationEmail(user.id, user.email);
+      await this.prisma.auditLog.create({ data: { ownerId: null, actorUserId: user.id, action: 'LOGIN_FAILED', details: { email: user.email, reason: 'email_unverified', activationEmailResent: resent } } });
+      throw new UnauthorizedException('email verification is required; a new verification link has been sent to your email');
     }
 
     await this.prisma.user.update({ where: { id: user.id }, data: { lastLoginAt: new Date() } });
@@ -80,6 +81,17 @@ export class AuthService {
     await this.prisma.activationToken.update({ where: { id: activationToken.id }, data: { usedAt: new Date() } });
     await this.prisma.user.update({ where: { id: activationToken.userId }, data: { emailVerifiedAt: new Date() } });
     return { status: 'activated' as const };
+  }
+
+  async resendActivation(dto: ResendActivationDto) {
+    const user = await this.prisma.user.findUnique({ where: { email: dto.email.trim().toLowerCase() } });
+    if (user && !user.emailVerifiedAt) {
+      const resent = await this.issueActivationEmail(user.id, user.email);
+      if (resent) await this.prisma.auditLog.create({ data: { ownerId: null, actorUserId: user.id, action: 'ACTIVATION_EMAIL_RESENT', details: { email: user.email, source: 'manual_request' } } });
+    }
+    // Always respond the same way whether or not the account exists or is
+    // already verified, so this endpoint can't be used to probe emails.
+    return { status: 'accepted' as const };
   }
 
   async refresh(refreshToken: string) {
@@ -143,6 +155,25 @@ export class AuthService {
 
   updatePreferences(userId: string, themePreference: ThemePreference) {
     return this.prisma.user.update({ where: { id: userId }, data: { themePreference }, select: { themePreference: true } });
+  }
+
+  // Creates a fresh activation token and emails it, unless an unused,
+  // unexpired token was already issued within the cooldown window (guards
+  // against a login-retry loop or repeated resend requests flooding inboxes).
+  // Returns whether an email was actually sent.
+  private async issueActivationEmail(userId: string, email: string) {
+    const recentToken = await this.prisma.activationToken.findFirst({
+      where: { userId, usedAt: null, expiresAt: { gt: new Date() }, createdAt: { gt: new Date(Date.now() - ACTIVATION_RESEND_COOLDOWN_MS) } },
+      orderBy: { createdAt: 'desc' },
+    });
+    if (recentToken) return false;
+
+    const rawToken = randomBytes(32).toString('hex');
+    const activationToken = await this.prisma.activationToken.create({
+      data: { userId, tokenHash: await argon2.hash(rawToken, { type: argon2.argon2id }), expiresAt: new Date(Date.now() + ACTIVATION_TOKEN_TTL_MS) },
+    });
+    await this.email.sendActivationEmail(email, `${activationToken.id}.${rawToken}`);
+    return true;
   }
 
   private async issueTokens(userId: string, email: string, transaction?: Prisma.TransactionClient, firstName?: string) {

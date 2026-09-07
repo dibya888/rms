@@ -53,6 +53,11 @@ export class ForgotPasswordDto {
   email!: string;
 }
 
+export class ResendActivationDto {
+  @IsEmail()
+  email!: string;
+}
+
 export class ResetPasswordDto {
   @IsString()
   @MinLength(32)

@@ -1,5 +1,7 @@
-import { IsEnum, IsString, IsUUID, MinLength } from 'class-validator';
+import { Equals, IsEnum, IsOptional, IsString, IsUUID, MinLength } from 'class-validator';
 import { UserStatus } from '@prisma/client';
+
+const CLEAN_DATABASE_CONFIRMATION = 'DELETE ALL DATA';
 
 export class UpdateUserStatusDto {
   @IsEnum(UserStatus)
@@ -13,4 +15,18 @@ export class UpdateUserRoleDto {
   @IsString()
   @MinLength(1)
   reason!: string;
+}
+
+export class CleanDatabaseDto {
+  // Requires the admin to type an exact confirmation phrase so the
+  // destructive action can never be triggered by an accidental request.
+  @IsString()
+  @Equals(CLEAN_DATABASE_CONFIRMATION, { message: `confirmation must equal "${CLEAN_DATABASE_CONFIRMATION}"` })
+  confirmation!: string;
+
+  // When provided, only this owner's business data is wiped. When omitted,
+  // business data for every tenant/owner in the system is wiped.
+  @IsOptional()
+  @IsUUID()
+  ownerId?: string;
 }

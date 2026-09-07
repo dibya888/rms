@@ -2,7 +2,7 @@ import { Body, Controller, Get, Inject, Post, Query, Req, Res, UseGuards } from 
 import { Throttle, ThrottlerGuard } from '@nestjs/throttler';
 import type { Request, Response } from 'express';
 import { AuthService } from './auth.service';
-import { ForgotPasswordDto, LoginDto, RefreshDto, RegisterDto, ResetPasswordDto, ThemePreferenceDto } from './auth.dto';
+import { ForgotPasswordDto, LoginDto, RefreshDto, RegisterDto, ResendActivationDto, ResetPasswordDto, ThemePreferenceDto } from './auth.dto';
 import { AccessTokenGuard } from './access-token.guard';
 
 const refreshCookie = 'rms_refresh';
@@ -31,6 +31,10 @@ export class AuthController {
 
   @Get('activate')
   async activate(@Query('token') token: string) { return this.auth.activate(token); }
+
+  @Post('resend-activation')
+  @Throttle({ default: { limit: authThrottleLimit, ttl: 60_000 } })
+  resendActivation(@Body() dto: ResendActivationDto) { return this.auth.resendActivation(dto); }
 
   @Post('refresh')
   async refresh(@Body() dto: RefreshDto, @Req() request: Request, @Res({ passthrough: true }) response: Response) {
