@@ -1,0 +1,14 @@
+[build]
+  command = "npm run build --workspace @rms/web"
+  publish = "apps/web/dist"
+
+[build.environment]
+  NODE_VERSION = "22"
+
+# Client-side routes (e.g. /activate, /register, /reset-password) are handled
+# entirely by main.tsx via window.location.pathname, so every path must fall
+# back to index.html instead of returning Netlify's own 404.
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
