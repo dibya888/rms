@@ -80,3 +80,32 @@ export class ThemePreferenceDto {
   @Matches(/^(LIGHT|DARK)$/)
   theme!: ThemePreference;
 }
+
+export class UpdateProfileDto {
+  @IsOptional()
+  @IsString()
+  @MinLength(1)
+  fullName?: string;
+
+  @IsOptional()
+  @IsString()
+  @MinLength(7)
+  phone?: string;
+}
+
+export class ChangePasswordDto {
+  @IsString()
+  @MinLength(1)
+  currentPassword!: string;
+
+  @IsString()
+  @MinLength(10)
+  @Matches(/[A-Z]/, { message: 'password must contain an uppercase letter' })
+  @Matches(/[a-z]/, { message: 'password must contain a lowercase letter' })
+  @Matches(/[0-9]/, { message: 'password must contain a digit' })
+  @Matches(/[^A-Za-z0-9]/, { message: 'password must contain a special character' })
+  newPassword!: string;
+
+  @IsString()
+  confirmNewPassword!: string;
+}

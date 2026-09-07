@@ -6,7 +6,7 @@ import { randomUUID } from 'node:crypto';
 import { randomBytes } from 'node:crypto';
 import { PrismaService } from '../prisma.service';
 import { EmailService } from '../email.service';
-import { ForgotPasswordDto, LoginDto, RegisterDto, ResendActivationDto, ResetPasswordDto } from './auth.dto';
+import { ForgotPasswordDto, LoginDto, RegisterDto, ResendActivationDto, ResetPasswordDto, UpdateProfileDto, ChangePasswordDto } from './auth.dto';
 
 const ACCESS_TTL = '15m';
 const REFRESH_DAYS = 7;
@@ -155,6 +155,38 @@ export class AuthService {
 
   updatePreferences(userId: string, themePreference: ThemePreference) {
     return this.prisma.user.update({ where: { id: userId }, data: { themePreference }, select: { themePreference: true } });
+  }
+
+  getProfile(userId: string) {
+    return this.prisma.user.findUniqueOrThrow({
+      where: { id: userId },
+      select: { id: true, email: true, fullName: true, phone: true, themePreference: true, emailVerifiedAt: true, createdAt: true },
+    });
+  }
+
+  async updateProfile(userId: string, dto: UpdateProfileDto) {
+    const data: Prisma.UserUpdateInput = {};
+    if (dto.fullName !== undefined) data.fullName = dto.fullName.trim();
+    if (dto.phone !== undefined) data.phone = dto.phone.trim();
+    return this.prisma.user.update({ where: { id: userId }, data, select: { id: true, email: true, fullName: true, phone: true } });
+  }
+
+  async changePassword(userId: string, dto: ChangePasswordDto) {
+    if (dto.newPassword !== dto.confirmNewPassword) throw new ConflictException('newPassword and confirmNewPassword must match');
+    if (COMMON_PASSWORDS.has(dto.newPassword.toLowerCase())) throw new ConflictException('choose a less common password');
+
+    const user = await this.prisma.user.findUniqueOrThrow({ where: { id: userId } });
+    if (!(await argon2.verify(user.passwordHash, dto.currentPassword))) throw new UnauthorizedException('current password is incorrect');
+
+    await this.prisma.withOwner(userId, async (transaction) => {
+      await transaction.user.update({ where: { id: userId }, data: { passwordHash: await argon2.hash(dto.newPassword, { type: argon2.argon2id }) } });
+      // Revoking every refresh session forces re-authentication everywhere
+      // else the account is signed in, the same as a forgot-password reset.
+      await transaction.refreshSession.updateMany({ where: { userId, revokedAt: null }, data: { revokedAt: new Date() } });
+      await transaction.auditLog.create({ data: { ownerId: null, actorUserId: userId, action: 'PASSWORD_CHANGED', details: { source: 'profile_settings' } } });
+    });
+
+    return { status: 'changed' as const };
   }
 
   // Creates a fresh activation token and emails it, unless an unused,

@@ -1,8 +1,8 @@
-import { Body, Controller, Get, Inject, Post, Query, Req, Res, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Inject, Patch, Post, Query, Req, Res, UseGuards } from '@nestjs/common';
 import { Throttle, ThrottlerGuard } from '@nestjs/throttler';
 import type { Request, Response } from 'express';
 import { AuthService } from './auth.service';
-import { ForgotPasswordDto, LoginDto, RefreshDto, RegisterDto, ResendActivationDto, ResetPasswordDto, ThemePreferenceDto } from './auth.dto';
+import { ChangePasswordDto, ForgotPasswordDto, LoginDto, RefreshDto, RegisterDto, ResendActivationDto, ResetPasswordDto, ThemePreferenceDto, UpdateProfileDto } from './auth.dto';
 import { AccessTokenGuard } from './access-token.guard';
 
 const refreshCookie = 'rms_refresh';
@@ -72,6 +72,19 @@ export class AuthController {
   @Post('preferences')
   @UseGuards(AccessTokenGuard)
   updatePreferences(@Req() request: Request & { user?: { sub: string } }, @Body() dto: ThemePreferenceDto) { return this.auth.updatePreferences(request.user!.sub, dto.theme); }
+
+  @Get('profile')
+  @UseGuards(AccessTokenGuard)
+  profile(@Req() request: Request & { user?: { sub: string } }) { return this.auth.getProfile(request.user!.sub); }
+
+  @Patch('profile')
+  @UseGuards(AccessTokenGuard)
+  updateProfile(@Req() request: Request & { user?: { sub: string } }, @Body() dto: UpdateProfileDto) { return this.auth.updateProfile(request.user!.sub, dto); }
+
+  @Post('change-password')
+  @UseGuards(AccessTokenGuard)
+  @Throttle({ default: { limit: authThrottleLimit, ttl: 60_000 } })
+  changePassword(@Req() request: Request & { user?: { sub: string } }, @Body() dto: ChangePasswordDto) { return this.auth.changePassword(request.user!.sub, dto); }
 
   private setRefreshCookie(response: Response, token: string) {
     response.cookie(refreshCookie, token, { ...this.cookieOptions(), maxAge: 7 * 24 * 60 * 60 * 1000 });
