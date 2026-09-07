@@ -331,11 +331,11 @@ model MoveOutSettlement {
 model AuditLog {
   id          String      @id @default(uuid()) @db.Uuid
   ownerId     String?     @db.Uuid
-  actorUserId String      @db.Uuid
+  actorUserId String?     @db.Uuid
   action      AuditAction
   details     Json
   createdAt   DateTime    @default(now())
-  actor       User        @relation(fields: [actorUserId], references: [id])
+  actor       User?       @relation(fields: [actorUserId], references: [id], onDelete: SetNull)
 
   @@index([ownerId])
 }
@@ -439,4 +439,5 @@ enum AuditAction {
   ROLE_CHANGED
   DATABASE_CLEANED
   ACTIVATION_EMAIL_RESENT
+  USER_DELETED
 }

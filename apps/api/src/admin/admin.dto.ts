@@ -1,4 +1,4 @@
-import { Equals, IsEnum, IsOptional, IsString, IsUUID, MinLength } from 'class-validator';
+import { Equals, IsEmail, IsEnum, IsOptional, IsString, IsUUID, MinLength } from 'class-validator';
 import { UserStatus } from '@prisma/client';
 
 const CLEAN_DATABASE_CONFIRMATION = 'DELETE ALL DATA';
@@ -29,4 +29,12 @@ export class CleanDatabaseDto {
   @IsOptional()
   @IsUUID()
   ownerId?: string;
+}
+
+export class DeleteUserDto {
+  // Requires the admin to type the exact account email being deleted, so
+  // this irreversible action can't be fired by an accidental click and the
+  // admin has to actually look at which account they're removing.
+  @IsEmail()
+  confirmation!: string;
 }
