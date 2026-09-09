@@ -46,6 +46,35 @@ type TimeFormat = '12h' | '24h';
 const getTimeFormat = (): TimeFormat => (typeof window !== 'undefined' && localStorage.getItem(TIME_FORMAT_STORAGE_KEY) === '24h') ? '24h' : '12h';
 const formatClockTime = (date: Date, format: TimeFormat = getTimeFormat()) => date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: format === '12h' });
 
+// Spelled-out amounts ("Fifteen Thousand Five Hundred Taka Only") are a
+// standard feature of printed rent receipts. Plain-English, international
+// grouping (thousand/million) rather than lakh/crore, since currency here is
+// a user-chosen device setting rather than tied to one country.
+const CURRENCY_WORD_NAMES: Record<string, string> = { USD: 'Dollars', BDT: 'Taka', INR: 'Rupees', EUR: 'Euros', GBP: 'Pounds', JPY: 'Yen', CNY: 'Yuan', AUD: 'Dollars', CAD: 'Dollars', SGD: 'Dollars', MYR: 'Ringgit', THB: 'Baht', AED: 'Dirhams', SAR: 'Riyals', PKR: 'Rupees', NPR: 'Rupees', LKR: 'Rupees' };
+const ONES = ['', 'One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven', 'Eight', 'Nine', 'Ten', 'Eleven', 'Twelve', 'Thirteen', 'Fourteen', 'Fifteen', 'Sixteen', 'Seventeen', 'Eighteen', 'Nineteen'];
+const TENS = ['', '', 'Twenty', 'Thirty', 'Forty', 'Fifty', 'Sixty', 'Seventy', 'Eighty', 'Ninety'];
+function integerToWords(value: number): string {
+  if (value === 0) return 'Zero';
+  function chunk(n: number): string {
+    let words = '';
+    if (n >= 100) { words += `${ONES[Math.floor(n / 100)]} Hundred`; n %= 100; if (n) words += ' '; }
+    if (n >= 20) { words += TENS[Math.floor(n / 10)]; if (n % 10) words += `-${ONES[n % 10]}`; }
+    else if (n > 0) { words += ONES[n]; }
+    return words;
+  }
+  const scales: Array<[number, string]> = [[1_000_000_000, 'Billion'], [1_000_000, 'Million'], [1_000, 'Thousand'], [1, '']];
+  let remaining = Math.floor(value); const parts: string[] = [];
+  for (const [scale, label] of scales) { if (remaining >= scale) { const count = Math.floor(remaining / scale); parts.push(label ? `${chunk(count)} ${label}` : chunk(count)); remaining %= scale; } }
+  return parts.join(' ');
+}
+function amountInWords(amount: number, currencyCode: string = getCurrencyCode()): string {
+  const currencyName = CURRENCY_WORD_NAMES[currencyCode] ?? currencyCode;
+  const whole = Math.floor(Math.abs(amount));
+  const fraction = Math.round((Math.abs(amount) - whole) * 100);
+  const words = `${integerToWords(whole)} ${currencyName}`;
+  return fraction > 0 ? `${words} and ${fraction}/100 Only` : `${words} Only`;
+}
+
 // Single source of truth for the top navigation so every page shows the
 // same links in the same order, instead of each page hand-rolling its own
 // (previously inconsistent) subset.
@@ -1116,12 +1145,89 @@ function Payments({ token }: { token: string }) {
 }
 
 function RecordPayment({ token }: { token: string }) {
-  const billId = new URLSearchParams(window.location.search).get('billId') ?? ''; const [bill, setBill] = useState<{ id: string; billMonth: string; status: string; houseRent: string; electricity: string; water: string; gas: string; otherBills: string; fine: string; discount: string; total: string; paidAmount: string; dueDate: string; lease: { tenant: { name: string } }; unit: { unitNo: string; property: { name: string } } } | null>(null); const [fields, setFields] = useState({ amount: '', paidOn: new Date().toISOString().slice(0, 10), method: 'CASH', notes: '' }); const [message, setMessage] = useState(''); const [busy, setBusy] = useState(false);
-  useEffect(() => { if (!billId) { setMessage('No bill selected.'); return; } fetch(`${apiUrl}/billing/bills`, { headers: { Authorization: `Bearer ${token}` } }).then(async (response) => { if (!response.ok) throw new Error('Unable to load bill.'); return response.json(); }).then((bills: Array<{ id: string; billMonth: string; status: string; houseRent: string; electricity: string; water: string; gas: string; otherBills: string; fine: string; discount: string; total: string; paidAmount: string; dueDate: string; lease: { tenant: { name: string } }; unit: { unitNo: string; property: { name: string } } }>) => { const selectedBill = bills.find((item) => item.id === billId); if (!selectedBill) throw new Error('Bill not found.'); setBill(selectedBill); setFields((current) => ({ ...current, amount: Math.max(0, Number(selectedBill.total) - Number(selectedBill.paidAmount)).toFixed(2) })); }).catch((error: Error) => setMessage(error.message)); }, [billId, token]);
+  const billId = new URLSearchParams(window.location.search).get('billId') ?? ''; const [bill, setBill] = useState<{ id: string; billMonth: string; status: string; houseRent: string; electricity: string; water: string; gas: string; otherBills: string; fine: string; discount: string; total: string; paidAmount: string; dueDate: string; lease: { tenant: { name: string; phone: string } }; unit: { unitNo: string; property: { name: string; address: string } } } | null>(null); const [fields, setFields] = useState({ amount: '', paidOn: new Date().toISOString().slice(0, 10), method: 'CASH', notes: '' }); const [message, setMessage] = useState(''); const [busy, setBusy] = useState(false);
+  const [receipt, setReceipt] = useState<{ payment: { id: string; amount: string; paidOn: string; method: string }; bill: { total: string; paidAmount: string; status: string; receiptNo: string | null } } | null>(null);
+  const [wantsSlip, setWantsSlip] = useState<boolean | null>(null);
+  useEffect(() => { if (!billId) { setMessage('No bill selected.'); return; } fetch(`${apiUrl}/billing/bills`, { headers: { Authorization: `Bearer ${token}` } }).then(async (response) => { if (!response.ok) throw new Error('Unable to load bill.'); return response.json(); }).then((bills: Array<{ id: string; billMonth: string; status: string; houseRent: string; electricity: string; water: string; gas: string; otherBills: string; fine: string; discount: string; total: string; paidAmount: string; dueDate: string; lease: { tenant: { name: string; phone: string } }; unit: { unitNo: string; property: { name: string; address: string } } }>) => { const selectedBill = bills.find((item) => item.id === billId); if (!selectedBill) throw new Error('Bill not found.'); setBill(selectedBill); setFields((current) => ({ ...current, amount: Math.max(0, Number(selectedBill.total) - Number(selectedBill.paidAmount)).toFixed(2) })); }).catch((error: Error) => setMessage(error.message)); }, [billId, token]);
   const update = (key: keyof typeof fields) => (event: ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) => setFields({ ...fields, [key]: event.target.value });
   const totalAmount = bill ? Number(bill.houseRent) + Number(bill.electricity) + Number(bill.water) + Number(bill.gas) + Number(bill.otherBills) + Number(bill.fine) - Number(bill.discount) : 0; const alreadyPaid = bill ? Number(bill.paidAmount) : 0; const outstanding = Math.max(0, totalAmount - alreadyPaid);
-  async function submit(event: FormEvent) { event.preventDefault(); setBusy(true); setMessage(''); try { if (!bill) throw new Error('Bill information is not available.'); const paymentAmount = Number(fields.amount); if (paymentAmount <= 0) throw new Error('Payment amount must be greater than zero.'); if (paymentAmount > outstanding) throw new Error(`Payment cannot exceed the outstanding amount of ${money(outstanding)}.`); const csrfResponse = await fetch(`${apiUrl}/auth/csrf`, { credentials: 'include' }); const { csrfToken } = await csrfResponse.json(); const payload = { amount: paymentAmount, paidOn: fields.paidOn, method: fields.method, notes: fields.notes || undefined }; const response = await fetch(`${apiUrl}/billing/bills/${billId}/payments`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}`, 'X-CSRF-Token': csrfToken }, credentials: 'include', body: JSON.stringify(payload) }); const body = await response.json(); if (!response.ok) throw new Error(Array.isArray(body.message) ? body.message.join(', ') : body.message ?? 'Unable to record payment.'); window.location.href = '/payments'; } catch (reason) { setMessage(reason instanceof Error ? reason.message : 'Unable to record payment.'); } finally { setBusy(false); } }
+  async function submit(event: FormEvent) { event.preventDefault(); setBusy(true); setMessage(''); try { if (!bill) throw new Error('Bill information is not available.'); const paymentAmount = Number(fields.amount); if (paymentAmount <= 0) throw new Error('Payment amount must be greater than zero.'); if (paymentAmount > outstanding) throw new Error(`Payment cannot exceed the outstanding amount of ${money(outstanding)}.`); const csrfResponse = await fetch(`${apiUrl}/auth/csrf`, { credentials: 'include' }); const { csrfToken } = await csrfResponse.json(); const payload = { amount: paymentAmount, paidOn: fields.paidOn, method: fields.method, notes: fields.notes || undefined }; const response = await fetch(`${apiUrl}/billing/bills/${billId}/payments`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}`, 'X-CSRF-Token': csrfToken }, credentials: 'include', body: JSON.stringify(payload) }); const body = await response.json(); if (!response.ok) throw new Error(Array.isArray(body.message) ? body.message.join(', ') : body.message ?? 'Unable to record payment.'); setReceipt(body); } catch (reason) { setMessage(reason instanceof Error ? reason.message : 'Unable to record payment.'); } finally { setBusy(false); } }
+  if (receipt && bill) {
+    // Printing isn't mandatory — ask first, rather than dropping a print
+    // dialog on every payment regardless of whether the owner wants one.
+    if (wantsSlip === null) return <PrintPromptScreen onChoice={setWantsSlip} />;
+    if (wantsSlip === false) return <main className="auth-shell"><section className="auth-intro"><p className="eyebrow">RMS / BILLING</p><h1>Payment recorded.</h1><p className="lede">No slip was printed. You can always come back and print one later from the payment history.</p></section><div className="auth-card"><p className="card-kicker">Bill payment</p><h2>All set</h2><p className="form-note"><a href="/payments">Return to payments.</a></p></div></main>;
+    return <PaymentSlipScreen bill={bill} receipt={receipt} />;
+  }
   return <main className="auth-shell"><section className="auth-intro"><p className="eyebrow">RMS / BILLING</p><h1>Settle the bill clearly.</h1><p className="lede">Review the bill first, then record the amount actually received. Partial payments remain part of the payment history.</p></section><form className="auth-card" onSubmit={submit}><p className="card-kicker">Bill payment</p><h2>Record payment</h2>{bill && <><div className="form-section"><p className="card-kicker">Bill information</p><div className="payment-summary"><div><span>Tenant</span><strong>{bill.lease.tenant.name}</strong></div><div><span>Property / Unit</span><strong>{bill.unit.property.name} / {bill.unit.unitNo}</strong></div><div><span>Billing month</span><strong>{bill.billMonth.slice(0, 7)}</strong></div><div><span>Due date</span><strong>{new Date(bill.dueDate).toLocaleDateString()}</strong></div></div></div><div className="form-section"><p className="card-kicker">Bill details</p><label>Rent<input type="number" value={bill.houseRent} readOnly /></label><label>Electricity<input type="number" value={bill.electricity} readOnly /></label><label>Water<input type="number" value={bill.water} readOnly /></label><label>Gas<input type="number" value={bill.gas} readOnly /></label><label>Other bills<input type="number" value={bill.otherBills} readOnly /></label><label>Fine<input type="number" value={bill.fine} readOnly /></label><label>Discount<input type="number" value={bill.discount} readOnly /></label><label>Total amount<input type="number" value={totalAmount.toFixed(2)} readOnly /></label><div className="payment-balance"><span>Already paid</span><strong>{money(alreadyPaid)}</strong><span>Outstanding</span><strong>{money(outstanding)}</strong></div></div></>}{bill && <div className="form-section"><p className="card-kicker">Payment</p><label>Amount to pay<input type="number" min="0.01" max={outstanding} step="0.01" value={fields.amount} onChange={update('amount')} required /></label><label>Paid on<input type="date" value={fields.paidOn} onChange={update('paidOn')} required /></label><label>Method<select value={fields.method} onChange={update('method')}><option value="CASH">Cash</option><option value="BANK_TRANSFER">Bank transfer</option><option value="CARD">Card</option><option value="OTHER">Other</option></select></label><label>Notes<textarea value={fields.notes} onChange={update('notes')} rows={3} /></label></div>}{message && <p className="error">{message}</p>}<button className="primary-button" disabled={busy || !bill || outstanding <= 0}>{busy ? 'Recording...' : outstanding <= 0 ? 'Bill fully paid' : 'Record payment'} <span>↗</span></button><p className="form-note"><a href="/payments">Return to payments.</a></p></form></main>;
+}
+
+type SlipBill = { billMonth: string; dueDate: string; houseRent: string; electricity: string; water: string; gas: string; otherBills: string; fine: string; discount: string; lease: { tenant: { name: string; phone: string } }; unit: { unitNo: string; property: { name: string; address: string } } };
+type SlipReceipt = { payment: { amount: string; paidOn: string; method: string }; bill: { total: string; paidAmount: string; status: string; receiptNo: string | null } };
+
+// Printing isn't mandatory — this asks first instead of putting a print
+// dialog (or even just an unwanted extra screen) in front of every owner on
+// every payment.
+function PrintPromptScreen({ onChoice }: { onChoice: (value: boolean) => void }) {
+  return <main className="auth-shell"><section className="auth-intro"><p className="eyebrow">RMS / BILLING</p><h1>Payment recorded.</h1><p className="lede">Would you like to print a payment slip for the tenant?</p></section><div className="auth-card"><p className="card-kicker">Bill payment</p><h2>Print a slip?</h2><p className="subtle">You can skip this — it's just a printable proof of payment, not required to keep the payment on record.</p><div className="report-actions"><button type="button" className="primary-button" onClick={() => onChoice(true)}>Yes, show slip <span>🖶</span></button><button type="button" className="quiet-button export-button" onClick={() => onChoice(false)}>No thanks</button></div></div></main>;
+}
+
+// The printable slip itself: pure black text/borders on white, no filled
+// colors or images, by design — so an owner can print a stack of these on a
+// cheap inkjet without burning through color cartridges. `@media print`
+// (see styles.css) hides everything else on the page and prints only this.
+function ReceiptSlip({ bill, receipt }: { bill: SlipBill; receipt: SlipReceipt }) {
+  const total = Number(receipt.bill.total);
+  const thisPayment = Number(receipt.payment.amount);
+  const previouslyPaid = Math.max(0, Number(receipt.bill.paidAmount) - thisPayment);
+  const balanceDue = Math.max(0, total - Number(receipt.bill.paidAmount));
+  const statusLabel = receipt.bill.status === 'PAID' ? 'PAID' : receipt.bill.status === 'PARTIAL' ? 'PARTIALLY PAID' : receipt.bill.status;
+  const billingPeriod = new Date(`${bill.billMonth.slice(0, 7)}-01`).toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+  const lineItems: Array<[string, number]> = ([
+    ['House rent', Number(bill.houseRent)],
+    ['Electricity', Number(bill.electricity)],
+    ['Water', Number(bill.water)],
+    ['Gas', Number(bill.gas)],
+    ['Other charges', Number(bill.otherBills)],
+    ['Fine', Number(bill.fine)],
+  ] as Array<[string, number]>).filter(([, amount]) => amount > 0);
+  return (
+    <div className="receipt-slip">
+      <div className="receipt-brand-block">
+        <img src="/icon-192.png" alt="" className="receipt-logo" />
+        <strong className="receipt-property-name">{bill.unit.property.name}</strong>
+        <span className="receipt-property-address">{bill.unit.property.address}</span>
+        <span className="receipt-property-address">Unit {bill.unit.unitNo}</span>
+      </div>
+      <hr />
+      <div className="receipt-status-row">
+        <div className="receipt-fields">
+          <div><span>Tenant Name:</span><strong>{bill.lease.tenant.name}</strong></div>
+          <div><span>Tenant Mobile No:</span><strong>{bill.lease.tenant.phone}</strong></div>
+          <div><span>Billing Period:</span><strong>{billingPeriod}</strong></div>
+        </div>
+        <div className="receipt-status-box">{statusLabel}</div>
+      </div>
+      <p className="receipt-subnote">Payment date: {new Date(receipt.payment.paidOn).toLocaleDateString()} &nbsp;·&nbsp; Method: {receipt.payment.method.replace('_', ' ')} &nbsp;·&nbsp; {receipt.bill.receiptNo ? `Receipt No. ${receipt.bill.receiptNo}` : `Due: ${new Date(bill.dueDate).toLocaleDateString()}`}</p>
+      <table className="receipt-table">
+        <thead><tr><th>Description</th><th>Amount</th></tr></thead>
+        <tbody>
+          {lineItems.map(([label, amount]) => <tr key={label}><td>{label}</td><td>{money(amount)}</td></tr>)}
+          {Number(bill.discount) > 0 && <tr><td>Discount</td><td>-{money(bill.discount)}</td></tr>}
+          {previouslyPaid > 0 && <tr><td>Previously paid</td><td>-{money(previouslyPaid)}</td></tr>}
+          <tr className="receipt-total-row"><td>Total Amount Paid</td><td>{money(thisPayment)}</td></tr>
+        </tbody>
+      </table>
+      {balanceDue > 0 && <p className="receipt-balance-note">Remaining balance on this bill: {money(balanceDue)}</p>}
+      <p className="receipt-words"><span>In words:</span> {amountInWords(thisPayment)}</p>
+      <p className="receipt-footnote">This is a computer-generated bill. No signature is required.</p>
+    </div>
+  );
+}
+
+function PaymentSlipScreen({ bill, receipt }: { bill: SlipBill & { id: string }; receipt: SlipReceipt }) {
+  const balanceDue = Math.max(0, Number(receipt.bill.total) - Number(receipt.bill.paidAmount));
+  return <main className="auth-shell"><section className="auth-intro no-print"><p className="eyebrow">RMS / BILLING</p><h1>Payment recorded.</h1><p className="lede">Print or save the slip below as proof of payment for the tenant. It's designed to be clear on plain paper without using colored ink.</p></section><div className="auth-card"><p className="card-kicker no-print">Bill payment</p><h2 className="no-print">Payment recorded</h2><div className="report-actions no-print"><button type="button" className="primary-button" onClick={() => window.print()}>Print slip <span>🖶</span></button>{balanceDue > 0 && <a className="quiet-button export-button" href={`/payments/record?billId=${bill.id}`}>Record another payment</a>}<a className="quiet-button export-button" href="/payments">Return to payments</a></div><ReceiptSlip bill={bill} receipt={receipt} /></div></main>;
 }
 
 const REPORT_TYPES: Array<{ value: string; label: string; description: string }> = [
