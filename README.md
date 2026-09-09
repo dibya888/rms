@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/branding/logo.png" alt="RMS - Rent Management System" width="420" />
+</p>
+
 # Property & Rent Management System
 
 A multi-tenant property and rent management system built with NestJS, PostgreSQL/Prisma, and React/Vite.

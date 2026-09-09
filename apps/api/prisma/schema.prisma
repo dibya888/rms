@@ -283,6 +283,7 @@ model Payment {
   recordedBy       User          @relation("PaymentsRecordedBy", fields: [recordedByUserId], references: [id])
 
   @@index([ownerId])
+  @@index([ownerId, paidOn])
 }
 
 model Repair {
@@ -304,6 +305,7 @@ model Repair {
   unit        Unit         @relation(fields: [unitId], references: [id])
 
   @@index([ownerId])
+  @@index([ownerId, repairDate])
 }
 
 model MoveOutSettlement {
