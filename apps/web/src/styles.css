@@ -480,6 +480,8 @@ html[data-theme="dark"] .topbar nav a { border-color: #3a5141; }
   .no-print { display: none !important; }
   @page { margin: 0.5in; }
 }
+.print-only-slip { display: none; }
+@media print { .print-only-slip { display: block; } }
 
 @media (max-width: 800px) {
   .payment-toolbar {
