@@ -16,6 +16,8 @@ model User {
   passwordHash        String
   status              UserStatus           @default(ACTIVE)
   themePreference     ThemePreference      @default(LIGHT)
+  currencyCode        String               @default("USD")
+  timeFormat          String               @default("12h")
   emailVerifiedAt     DateTime?
   lastLoginAt         DateTime?
   createdAt           DateTime             @default(now())

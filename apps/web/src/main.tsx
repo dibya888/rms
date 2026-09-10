@@ -1,4 +1,4 @@
-import { ChangeEvent, FormEvent, Fragment, StrictMode, useEffect, useState } from 'react';
+import { ChangeEvent, FormEvent, Fragment, StrictMode, useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import './styles.css';
 // Wakes the free-tier Render API before the app loads — see the file for
@@ -155,6 +155,34 @@ function App() {
   const [firstName, setFirstName] = useState('');
   const [error, setError] = useState('');
   const [retryCount, setRetryCount] = useState(0);
+
+  // Currency and time format used to live ONLY in this browser's
+  // localStorage, which is why they appeared to silently reset to the
+  // default on a fresh deploy, a different browser, or a new device: that's
+  // a different localStorage with nothing in it, not a bug wiping anything.
+  // They're now also saved on the account (same pattern as themePreference
+  // already used) — this pulls that saved value down once per login and
+  // caches it into localStorage, which is what money()/formatClockTime()
+  // actually read on every call for speed. A reload is only triggered if
+  // the account's saved value actually differs from what's cached, so a
+  // normal returning visit on the same browser does nothing extra.
+  const preferencesSyncedRef = useRef(false);
+  useEffect(() => {
+    if (!token || preferencesSyncedRef.current) return;
+    preferencesSyncedRef.current = true;
+    let cancelled = false;
+    fetch(`${apiUrl}/auth/preferences`, { headers: { Authorization: `Bearer ${token}` } })
+      .then((response) => (response.ok ? response.json() : null))
+      .then((preferences: { themePreference?: string; currencyCode?: string; timeFormat?: string } | null) => {
+        if (cancelled || !preferences) return;
+        let changed = false;
+        if (preferences.currencyCode && preferences.currencyCode !== getCurrencyCode()) { localStorage.setItem(CURRENCY_STORAGE_KEY, preferences.currencyCode); changed = true; }
+        if (preferences.timeFormat && preferences.timeFormat !== getTimeFormat()) { localStorage.setItem(TIME_FORMAT_STORAGE_KEY, preferences.timeFormat); changed = true; }
+        if (changed) window.location.reload();
+      })
+      .catch(() => { /* best-effort — localStorage/defaults still work on their own */ });
+    return () => { cancelled = true; };
+  }, [token]);
 
   // Keep the access token alive in the background: refresh a few minutes
   // before its 15-minute expiry, and again whenever the tab regains focus
@@ -1632,11 +1660,25 @@ function Settings({ token }: { token: string }) {
   const [timeFormat, setTimeFormat] = useState<TimeFormat>(() => getTimeFormat());
   const [saved, setSaved] = useState(false);
 
+  // Saved on the account (same endpoint themePreference already uses) so it
+  // survives a new browser, a different device, or a fresh deploy — not
+  // just this one browser's localStorage. If the request fails, the choice
+  // still applies locally via localStorage; it just won't follow the
+  // account elsewhere until it succeeds.
+  async function saveToAccount(changes: { currencyCode?: string; timeFormat?: string }) {
+    try {
+      const csrfResponse = await fetch(`${apiUrl}/auth/csrf`, { credentials: 'include' });
+      const { csrfToken } = await csrfResponse.json();
+      await fetch(`${apiUrl}/auth/preferences`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}`, 'X-CSRF-Token': csrfToken }, credentials: 'include', body: JSON.stringify(changes) });
+    } catch { /* best-effort; localStorage already reflects the choice on this device */ }
+  }
+
   function applyCurrency(event: ChangeEvent<HTMLSelectElement>) {
     const next = event.target.value;
     localStorage.setItem(CURRENCY_STORAGE_KEY, next);
     setCurrency(next);
     setSaved(true);
+    void saveToAccount({ currencyCode: next });
     // The currency sign is read by the module-level `money()` helper used
     // across every page. Reloading is the simplest way to make every
     // already-mounted component pick up the new sign immediately and
@@ -1649,10 +1691,11 @@ function Settings({ token }: { token: string }) {
     localStorage.setItem(TIME_FORMAT_STORAGE_KEY, next);
     setTimeFormat(next);
     setSaved(true);
+    void saveToAccount({ timeFormat: next });
     window.setTimeout(() => window.location.reload(), 400);
   }
 
-  return <main className="app-shell"><header className="topbar"><div className="brand"><img className="brand-mark" src="/icon-192.png" alt="RMS" /><span>RMS</span></div><TopNav active="" /><AccountMenu /></header><div className="content"><section className="welcome-row"><div><p className="eyebrow">RMS / ACCOUNT</p><h1>Settings.</h1><p className="subtle">Preferences for how RMS displays information on this device.</p></div></section><section className="dashboard-grid"><div className="dashboard-card"><div className="card-heading"><div><p className="card-kicker">Display</p><h2>Currency</h2></div></div><label>Currency sign<select value={currency} onChange={applyCurrency}>{CURRENCIES.map((option) => <option value={option.code} key={option.code}>{option.label}</option>)}</select></label><p className="subtle">Applies to every amount shown across the dashboard, payments, tenants, and reports on this device.</p></div><div className="dashboard-card"><div className="card-heading"><div><p className="card-kicker">Display</p><h2>Time format</h2></div></div><div className="report-actions"><button type="button" className={timeFormat === '12h' ? 'primary-button compact' : 'quiet-button export-button'} onClick={() => applyTimeFormat('12h')}>12-hour (2:30 PM)</button><button type="button" className={timeFormat === '24h' ? 'primary-button compact' : 'quiet-button export-button'} onClick={() => applyTimeFormat('24h')}>24-hour (14:30)</button></div><p className="subtle">Controls how the clock on the Dashboard is displayed on this device.</p></div>{saved && <p className="form-note" role="status">Saved. Refreshing…</p>}</section></div></main>;
+  return <main className="app-shell"><header className="topbar"><div className="brand"><img className="brand-mark" src="/icon-192.png" alt="RMS" /><span>RMS</span></div><TopNav active="" /><AccountMenu /></header><div className="content"><section className="welcome-row"><div><p className="eyebrow">RMS / ACCOUNT</p><h1>Settings.</h1><p className="subtle">Preferences for how RMS displays information, saved to your account.</p></div></section><section className="dashboard-grid"><div className="dashboard-card"><div className="card-heading"><div><p className="card-kicker">Display</p><h2>Currency</h2></div></div><label>Currency sign<select value={currency} onChange={applyCurrency}>{CURRENCIES.map((option) => <option value={option.code} key={option.code}>{option.label}</option>)}</select></label><p className="subtle">Applies to every amount shown across the dashboard, payments, tenants, and reports — saved to your account, so it follows you to any device or browser.</p></div><div className="dashboard-card"><div className="card-heading"><div><p className="card-kicker">Display</p><h2>Time format</h2></div></div><div className="report-actions"><button type="button" className={timeFormat === '12h' ? 'primary-button compact' : 'quiet-button export-button'} onClick={() => applyTimeFormat('12h')}>12-hour (2:30 PM)</button><button type="button" className={timeFormat === '24h' ? 'primary-button compact' : 'quiet-button export-button'} onClick={() => applyTimeFormat('24h')}>24-hour (14:30)</button></div><p className="subtle">Controls how the clock on the Dashboard is displayed. Saved to your account.</p></div>{saved && <p className="form-note" role="status">Saved. Refreshing…</p>}</section></div></main>;
 }
 
 createRoot(document.getElementById('root')!).render(<StrictMode><ServerWakeGate><App /></ServerWakeGate></StrictMode>);

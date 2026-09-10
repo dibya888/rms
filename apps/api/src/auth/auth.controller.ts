@@ -2,7 +2,7 @@ import { Body, Controller, Get, Inject, Patch, Post, Query, Req, Res, UseGuards 
 import { Throttle, ThrottlerGuard } from '@nestjs/throttler';
 import type { Request, Response } from 'express';
 import { AuthService } from './auth.service';
-import { ChangePasswordDto, ForgotPasswordDto, LoginDto, RefreshDto, RegisterDto, ResendActivationDto, ResetPasswordDto, ThemePreferenceDto, UpdateProfileDto } from './auth.dto';
+import { ChangePasswordDto, ForgotPasswordDto, LoginDto, RefreshDto, RegisterDto, ResendActivationDto, ResetPasswordDto, UpdatePreferencesDto, UpdateProfileDto } from './auth.dto';
 import { AccessTokenGuard } from './access-token.guard';
 
 const refreshCookie = 'rms_refresh';
@@ -71,7 +71,7 @@ export class AuthController {
 
   @Post('preferences')
   @UseGuards(AccessTokenGuard)
-  updatePreferences(@Req() request: Request & { user?: { sub: string } }, @Body() dto: ThemePreferenceDto) { return this.auth.updatePreferences(request.user!.sub, dto.theme); }
+  updatePreferences(@Req() request: Request & { user?: { sub: string } }, @Body() dto: UpdatePreferencesDto) { return this.auth.updatePreferences(request.user!.sub, dto); }
 
   @Get('profile')
   @UseGuards(AccessTokenGuard)

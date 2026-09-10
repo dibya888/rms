@@ -75,10 +75,21 @@ export class ResetPasswordDto {
   confirmPassword!: string;
 }
 
-export class ThemePreferenceDto {
+export class UpdatePreferencesDto {
+  @IsOptional()
   @IsString()
   @Matches(/^(LIGHT|DARK)$/)
-  theme!: ThemePreference;
+  theme?: ThemePreference;
+
+  @IsOptional()
+  @IsString()
+  @Matches(/^[A-Z]{3}$/, { message: 'currencyCode must be a 3-letter currency code' })
+  currencyCode?: string;
+
+  @IsOptional()
+  @IsString()
+  @Matches(/^(12h|24h)$/)
+  timeFormat?: string;
 }
 
 export class UpdateProfileDto {

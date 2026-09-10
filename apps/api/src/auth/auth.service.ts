@@ -150,11 +150,15 @@ export class AuthService {
   }
 
   getPreferences(userId: string) {
-    return this.prisma.user.findUniqueOrThrow({ where: { id: userId }, select: { themePreference: true } });
+    return this.prisma.user.findUniqueOrThrow({ where: { id: userId }, select: { themePreference: true, currencyCode: true, timeFormat: true } });
   }
 
-  updatePreferences(userId: string, themePreference: ThemePreference) {
-    return this.prisma.user.update({ where: { id: userId }, data: { themePreference }, select: { themePreference: true } });
+  updatePreferences(userId: string, changes: { theme?: ThemePreference; currencyCode?: string; timeFormat?: string }) {
+    const data: { themePreference?: ThemePreference; currencyCode?: string; timeFormat?: string } = {};
+    if (changes.theme) data.themePreference = changes.theme;
+    if (changes.currencyCode) data.currencyCode = changes.currencyCode;
+    if (changes.timeFormat) data.timeFormat = changes.timeFormat;
+    return this.prisma.user.update({ where: { id: userId }, data, select: { themePreference: true, currencyCode: true, timeFormat: true } });
   }
 
   getProfile(userId: string) {
