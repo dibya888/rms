@@ -61,8 +61,9 @@ export class AuthController {
 
   @Get('me')
   @UseGuards(AccessTokenGuard)
-  me(@Req() request: Request & { user?: { sub: string; email: string; firstName?: string } }) {
-    return { user: request.user };
+  async me(@Req() request: Request & { user?: { sub: string; email: string; firstName?: string } }) {
+    const roles = await this.auth.getRoles(request.user!.sub);
+    return { user: { ...request.user, roles } };
   }
 
   @Get('preferences')

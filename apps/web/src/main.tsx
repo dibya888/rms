@@ -1,11 +1,11 @@
-import { ChangeEvent, FormEvent, Fragment, StrictMode, useEffect, useRef, useState } from 'react';
+import { ChangeEvent, FormEvent, Fragment, ReactNode, StrictMode, useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import './styles.css';
 // Wakes the free-tier Render API before the app loads — see the file for
 // what it does and how to remove it if you move to a non-sleeping plan.
 import { ServerWakeGate } from './server-wake-gate';
 
-type Summary = { totalUnits: number; occupiedUnits: number; availableUnits: number; thisMonthIncome: string; totalOutstanding: string; thisMonthDue: string; thisMonthOwnerRepairCost: string; thisMonthUtilityBills: string; thisMonthNetProfit: string; monthlyIncomeTrend: Array<{ month: string; income: string }>; recentPayments: Array<{ id: string; amount: string; paidOn: string; method: string }> };
+type Summary = { totalUnits: number; occupiedUnits: number; availableUnits: number; thisMonthIncome: string; totalOutstanding: string; thisMonthDue: string; thisMonthOwnerRepairCost: string; thisMonthUtilityBills: string; thisMonthUtilityBreakdown: { electricity: string; water: string; gas: string; other: string }; thisMonthNetProfit: string; monthlyIncomeTrend: Array<{ month: string; income: string; repair: string }>; recentPayments: Array<{ id: string; amount: string; paidOn: string; method: string; tenantName: string; unitNo: string }> };
 const apiUrl = import.meta.env.VITE_API_URL ?? 'http://localhost:3000';
 
 // Currency is a display-only, per-device preference (see Settings). Nothing
@@ -36,6 +36,24 @@ const CURRENCY_STORAGE_KEY = 'rms_currency';
 const getCurrencyCode = () => (typeof window !== 'undefined' && localStorage.getItem(CURRENCY_STORAGE_KEY)) || 'USD';
 const getCurrencySymbol = (code: string = getCurrencyCode()) => CURRENCIES.find((currency) => currency.code === code)?.symbol ?? '$';
 const money = (value: string | number) => `${getCurrencySymbol()}${new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 }).format(Number(value))}`;
+
+// Minimal static-router param matcher for the handful of dynamic admin
+// routes (e.g. /admin/properties/:propertyId). Segment counts must match
+// exactly; a leading ':' segment captures whatever's in that position.
+// Everything else in this app is plain exact-string pathname matching, so
+// this stays a small helper rather than pulling in a routing library.
+function matchPath(pattern: string, pathname: string): Record<string, string> | null {
+  const patternParts = pattern.split('/').filter(Boolean);
+  const pathParts = pathname.split('/').filter(Boolean);
+  if (patternParts.length !== pathParts.length) return null;
+  const params: Record<string, string> = {};
+  for (let index = 0; index < patternParts.length; index += 1) {
+    const part = patternParts[index];
+    if (part.startsWith(':')) params[part.slice(1)] = decodeURIComponent(pathParts[index]);
+    else if (part !== pathParts[index]) return null;
+  }
+  return params;
+}
 
 // Time format is a per-device display preference, same idea as currency:
 // `toLocaleTimeString(undefined, ...)` follows the BROWSER's locale default,
@@ -125,7 +143,7 @@ function TopNav({ active }: { active: string }) {
 // buttons. Pass onSignOut only where a caller already tracks auth state in
 // memory (the Dashboard); everywhere else this does the same CSRF-protected
 // logout call itself before clearing the token and redirecting.
-function AccountMenu({ onSignOut }: { onSignOut?: () => void }) {
+function AccountMenu({ onSignOut, variant = 'owner' }: { onSignOut?: () => void; variant?: 'owner' | 'admin' }) {
   const [open, setOpen] = useState(false);
   useEffect(() => { if (!open) return; const close = () => setOpen(false); window.addEventListener('click', close); return () => window.removeEventListener('click', close); }, [open]);
   async function signOut() {
@@ -142,8 +160,8 @@ function AccountMenu({ onSignOut }: { onSignOut?: () => void }) {
   return <div className="account-menu" onClick={(event) => event.stopPropagation()}>
     <button type="button" className="account-menu-trigger" aria-label="Account menu" aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen((value) => !value)}>⋮</button>
     {open && <div className="account-menu-panel" role="menu">
-      <a className="account-menu-item" href="/profile" role="menuitem">Profile</a>
-      <a className="account-menu-item" href="/settings" role="menuitem">Settings</a>
+      {variant === 'owner' && <a className="account-menu-item" href="/profile" role="menuitem">Profile</a>}
+      {variant === 'owner' && <a className="account-menu-item" href="/settings" role="menuitem">Settings</a>}
       <button type="button" className="account-menu-item account-menu-danger" role="menuitem" onClick={signOut}>Logout</button>
     </div>}
   </div>;
@@ -207,6 +225,16 @@ function App() {
 
   useEffect(() => {
     if (!token) return;
+    // Admin pages fetch their own data (AdminOverview, etc.) and don't need
+    // the owner dashboard summary at all. Skipping it here also avoids the
+    // one real failure mode this used to have: a SYSTEM_ADMIN-only account
+    // (no OWNER_ADMIN role, so no owned properties) landing on a non-admin
+    // path — root `/`, a stray "Return to dashboard" link — would try to
+    // load an owner dashboard it fundamentally has nothing to show, and get
+    // stuck on a permanent "Unable to load your dashboard" retry screen.
+    // The redirect below sends that account straight to /admin instead; on
+    // an /admin/* path there's nothing to redirect and nothing to load.
+    if (window.location.pathname.startsWith('/admin')) return;
     let cancelled = false;
     async function load(withToken: string, alreadyRetried: boolean): Promise<void> {
       let summaryResponse: Response; let meResponse: Response;
@@ -243,8 +271,15 @@ function App() {
         if (!cancelled) setError('Unable to load your dashboard right now. Please try again in a moment.');
         return;
       }
-      const [nextSummary, me] = await Promise.all([summaryResponse.json() as Promise<Summary>, meResponse.json() as Promise<{ user: { firstName?: string } }>]);
+      const [nextSummary, me] = await Promise.all([summaryResponse.json() as Promise<Summary>, meResponse.json() as Promise<{ user: { firstName?: string; roles?: string[] } }>]);
       if (cancelled) return;
+      const roles = me.user.roles ?? [];
+      if (roles.includes('SYSTEM_ADMIN') && !roles.includes('OWNER_ADMIN')) {
+        // Pure admin account, no owner data to show — go straight to the
+        // control center instead of rendering an empty owner dashboard.
+        window.location.href = '/admin';
+        return;
+      }
       setSummary(nextSummary);
       setFirstName(me.user.firstName ?? '');
       setError('');
@@ -253,7 +288,7 @@ function App() {
     return () => { cancelled = true; };
   }, [token, retryCount]);
 
-  if (!token) return window.location.pathname === '/register' ? <Register /> : window.location.pathname === '/activate' ? <Activate /> : window.location.pathname === '/forgot-password' ? <ForgotPassword /> : window.location.pathname === '/reset-password' ? <ResetPassword /> : <Login error={error} onLogin={(next) => { localStorage.setItem(ACCESS_TOKEN_STORAGE_KEY, next); setToken(next); setError(''); }} />;
+  if (!token) return window.location.pathname.startsWith('/admin') ? <Login error={error} variant="admin" onLogin={(next) => { localStorage.setItem(ACCESS_TOKEN_STORAGE_KEY, next); setToken(next); setError(''); }} /> : window.location.pathname === '/register' ? <Register /> : window.location.pathname === '/activate' ? <Activate /> : window.location.pathname === '/forgot-password' ? <ForgotPassword /> : window.location.pathname === '/reset-password' ? <ResetPassword /> : <Login error={error} onLogin={(next) => { localStorage.setItem(ACCESS_TOKEN_STORAGE_KEY, next); setToken(next); setError(''); }} />;
   if (window.location.pathname === '/properties/new') return <AddProperty token={token} />;
   if (window.location.pathname === '/units/new') return <AddUnit token={token} />;
   if (window.location.pathname === '/units/manage') return <ManageUnits token={token} />;
@@ -271,7 +306,18 @@ function App() {
   if (window.location.pathname === '/repairs') return <Repairs token={token} />;
   if (window.location.pathname === '/repairs/manage') return <ManageRepairs token={token} />;
   if (window.location.pathname === '/repairs/new') return <AddRepair token={token} />;
-  if (window.location.pathname === '/admin') return <Admin token={token} />;
+  if (window.location.pathname === '/admin') return <AdminOverview token={token} />;
+  if (window.location.pathname === '/admin/users') return <AdminUsersPage token={token} />;
+  if (window.location.pathname === '/admin/properties') return <AdminPropertiesPage token={token} />;
+  if (window.location.pathname === '/admin/units') return <AdminUnitsPage token={token} />;
+  if (window.location.pathname === '/admin/tenants') return <AdminTenantsPage token={token} />;
+  if (window.location.pathname === '/admin/payments') return <AdminPaymentsPage token={token} />;
+  if (window.location.pathname === '/admin/bills') return <AdminRentBillsPage token={token} />;
+  if (window.location.pathname === '/admin/repairs') return <AdminRepairsPage token={token} />;
+  if (window.location.pathname === '/admin/audit-logs') return <AdminAuditLogsPage token={token} />;
+  if (window.location.pathname === '/admin/system') return <AdminSystemPage token={token} />;
+  { const match = matchPath('/admin/users/:userId', window.location.pathname); if (match) return <AdminUserDetailPage token={token} userId={match.userId} />; }
+  { const match = matchPath('/admin/properties/:propertyId', window.location.pathname); if (match) return <AdminPropertyDetailPage token={token} propertyId={match.propertyId} />; }
   if (window.location.pathname === '/profile') return <Profile token={token} />;
   if (window.location.pathname === '/settings') return <Settings token={token} />;
   if (!summary) return <main className="loading-screen">{error ? <><p>{error}</p><button type="button" className="quiet-button" onClick={() => { setError(''); setRetryCount((count) => count + 1); }}>Retry</button></> : <><span className="status-dot" /> Loading portfolio</>}</main>;
@@ -285,10 +331,11 @@ function ThemeToggle({ token }: { token: string }) {
   return <button className="theme-toggle" onClick={toggle} title="Toggle theme" aria-label="Toggle theme">{theme === 'LIGHT' ? '☾' : '☀'}</button>;
 }
 
-function Login({ error, onLogin }: { error: string; onLogin: (token: string) => void }) {
+function Login({ error, onLogin, variant = 'owner' }: { error: string; onLogin: (token: string) => void; variant?: 'owner' | 'admin' }) {
   const [email, setEmail] = useState(''); const [password, setPassword] = useState(''); const [busy, setBusy] = useState(false); const [message, setMessage] = useState(error); const [needsVerification, setNeedsVerification] = useState(false); const [resending, setResending] = useState(false);
   async function submit(event: FormEvent) { event.preventDefault(); setBusy(true); setMessage(''); setNeedsVerification(false); try { const csrfResponse = await fetch(`${apiUrl}/auth/csrf`, { credentials: 'include' }); const { csrfToken } = await csrfResponse.json(); const response = await fetch(`${apiUrl}/auth/login`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken }, credentials: 'include', body: JSON.stringify({ email, password }) }); const body = await response.json(); if (!response.ok) { if (typeof body.message === 'string' && body.message.includes('verification')) setNeedsVerification(true); throw new Error(body.message ?? 'Unable to sign in.'); } onLogin(body.accessToken); } catch (reason) { setMessage(reason instanceof Error ? reason.message : 'Unable to sign in.'); } finally { setBusy(false); } }
   async function resendVerification() { setResending(true); try { const csrfResponse = await fetch(`${apiUrl}/auth/csrf`, { credentials: 'include' }); const { csrfToken } = await csrfResponse.json(); await fetch(`${apiUrl}/auth/resend-activation`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken }, credentials: 'include', body: JSON.stringify({ email }) }); setMessage('If that account needs verification, a new link is on its way to your email.'); } finally { setResending(false); } }
+  if (variant === 'admin') return <main className="auth-shell admin-auth-shell"><section className="auth-intro"><p className="eyebrow">RMS / ADMINISTRATION</p><h1>Platform control center.</h1><p className="lede">Restricted to authorized administrators. Every action here is audit-logged.</p></section><form className="auth-card" onSubmit={submit}><p className="card-kicker">Administrator sign-in</p><h2>Log in</h2><label>Email<input type="email" value={email} onChange={(event) => setEmail(event.target.value)} required autoComplete="email" /></label><label>Password<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} required autoComplete="current-password" /></label>{message && <p className="error">{message}</p>}<button className="primary-button" disabled={busy}>{busy ? 'Logging in...' : 'Log in'} <span>↗</span></button><p className="form-note"><a href="/forgot-password">Forgot password?</a></p></form></main>;
   return <main className="auth-shell"><section className="auth-intro"><p className="eyebrow">RMS / OWNER CONSOLE</p><h1>Know what is happening across every door.</h1><p className="lede">A calm operating view for properties, tenants, payments, and the small details that keep rent on time.</p><div className="signal"><span className="status-dot" /> Portfolio systems ready</div></section><form className="auth-card" onSubmit={submit}><p className="card-kicker">Welcome back</p><h2>Log in</h2><label>Email<input type="email" value={email} onChange={(event) => setEmail(event.target.value)} required autoComplete="email" /></label><label>Password<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} required autoComplete="current-password" /></label>{message && <p className="error">{message}</p>}{needsVerification && <button type="button" className="quiet-button" disabled={resending} onClick={resendVerification}>{resending ? 'Sending...' : 'Resend verification email'}</button>}<button className="primary-button" disabled={busy}>{busy ? 'Logging in...' : 'Log in'} <span>↗</span></button><p className="form-note"><a href="/forgot-password">Forgot password?</a> · <a href="/register">Sign up</a></p></form></main>;
 }
 
@@ -1399,33 +1446,205 @@ function AddRepair({ token }: { token: string }) {
   return <main className="auth-shell"><section className="auth-intro"><p className="eyebrow">RMS / EXPENSES</p><h1>Record the work while it is fresh.</h1><p className="lede">Attach an owner or tenant-paid repair to the correct unit and keep the portfolio costs traceable.</p></section><form className="auth-card" onSubmit={submit}><p className="card-kicker">New repair</p><h2>Add repair</h2><label>Unit<select value={fields.unitId} onChange={update('unitId')} required><option value="">Choose a unit</option>{units.map((unit) => <option value={unit.id} key={unit.id}>{unit.property.name} / {unit.unitNo}</option>)}</select></label><label>Date<input type="date" value={fields.repairDate} onChange={update('repairDate')} required /></label><label>Category<input value={fields.category} onChange={update('category')} required /></label><label>Description<textarea value={fields.description} onChange={update('description')} rows={3} required /></label><label>Cost<input type="number" min="0" step="0.01" value={fields.cost} onChange={update('cost')} required /></label><label>Paid by<select value={fields.paidBy} onChange={update('paidBy')}><option value="OWNER">Owner</option><option value="TENANT">Tenant</option></select></label><label>Status<select value={fields.status} onChange={update('status')}><option value="OPEN">Open</option><option value="IN_PROGRESS">In progress</option><option value="COMPLETED">Completed</option><option value="CANCELLED">Cancelled</option></select></label><label>Vendor name<input value={fields.vendorName} onChange={update('vendorName')} /></label><label>Vendor phone<input value={fields.vendorPhone} onChange={update('vendorPhone')} /></label><label>Invoice number<input value={fields.invoiceNo} onChange={update('invoiceNo')} /></label>{message && <p className="error">{message}</p>}<button className="primary-button" disabled={busy || !units.length}>{busy ? 'Adding repair...' : 'Add repair'} <span>↗</span></button><p className="form-note"><a href="/repairs">Return to repairs.</a></p></form></main>;
 }
 
-function Admin({ token }: { token: string }) {
-  type AdminUser = { id: string; fullName: string; email: string; phone: string; status: string; emailVerifiedAt: string | null; lastLoginAt: string | null; createdAt: string; userRoles?: Array<{ role: { id: string; name: string } }>; _count?: { properties: number; tenants: number; units: number } };
-  type AdminOverview = { users: { total: number; active: number; suspended: number; disabled: number; unverified: number }; portfolio: { totalOwners: number; totalProperties: number; totalUnits: number; occupiedUnits: number; totalTenants: number }; billing: { thisMonthIncome: string; totalOutstanding: string } };
-  type AdminLog = { id: string; action: string; createdAt: string; actor: { fullName: string } | null };
+const ADMIN_NAV: Array<{ key: string; label: string; href: string }> = [
+  { key: 'dashboard', label: 'Dashboard', href: '/admin' },
+  { key: 'users', label: 'Users', href: '/admin/users' },
+  { key: 'properties', label: 'Properties', href: '/admin/properties' },
+  { key: 'units', label: 'Units', href: '/admin/units' },
+  { key: 'tenants', label: 'Tenants', href: '/admin/tenants' },
+  { key: 'payments', label: 'Payments', href: '/admin/payments' },
+  { key: 'bills', label: 'Rent bills', href: '/admin/bills' },
+  { key: 'repairs', label: 'Repairs', href: '/admin/repairs' },
+  { key: 'audit', label: 'Audit logs', href: '/admin/audit-logs' },
+  { key: 'system', label: 'System', href: '/admin/system' },
+];
 
-  const [overview, setOverview] = useState<AdminOverview | null>(null);
+// Shell every admin screen renders inside: sidebar nav (the routing
+// structure requested for the control center), the global cross-entity
+// search, and the shared account menu. `active` highlights the current
+// section in the sidebar the same way TopNav does for the owner-facing nav.
+function AdminLayout({ active, token, title, kicker, children }: { active: string; token: string; title: string; kicker: string; children: ReactNode }) {
+  return <main className="app-shell admin-shell">
+    <header className="topbar">
+      <div className="brand"><img className="brand-mark" src="/icon-192.png" alt="RMS" /><span>RMS ADMIN</span></div>
+      <AdminSearch token={token} />
+      <AccountMenu variant="admin" />
+    </header>
+    <div className="admin-body">
+      <aside className="admin-sidebar">{ADMIN_NAV.map((item) => <a key={item.key} className={item.key === active ? 'admin-nav-link active' : 'admin-nav-link'} href={item.href}>{item.label}</a>)}</aside>
+      <div className="content admin-content">
+        <section className="welcome-row"><div><p className="eyebrow">{kicker}</p><h1>{title}</h1></div></section>
+        {children}
+      </div>
+    </div>
+  </main>;
+}
+
+type AdminSearchResults = {
+  users: Array<{ id: string; fullName: string; email: string; status: string }>;
+  properties: Array<{ id: string; name: string; owner: { id: string; fullName: string }; unitCount: number; tenantCount: number }>;
+  tenants: Array<{ id: string; name: string; phone: string; property: { id: string; name: string } | null; unitNo: string | null }>;
+  units: Array<{ id: string; unitNo: string; status: string; property: { id: string; name: string } }>;
+};
+
+// Cross-entity global search (users/properties/tenants/units), backed by
+// GET /admin/search. Debounced so it doesn't fire on every keystroke, and
+// closes on an outside click the same way AccountMenu's panel does.
+function AdminSearch({ token }: { token: string }) {
+  const [q, setQ] = useState('');
+  const [results, setResults] = useState<AdminSearchResults | null>(null);
+  const [open, setOpen] = useState(false);
+
+  useEffect(() => {
+    const query = q.trim();
+    if (query.length < 2) { setResults(null); return; }
+    const timeout = setTimeout(() => {
+      fetch(`${apiUrl}/admin/search?q=${encodeURIComponent(query)}`, { headers: { Authorization: `Bearer ${token}` } }).then((response) => response.json()).then(setResults).catch(() => setResults(null));
+    }, 250);
+    return () => clearTimeout(timeout);
+  }, [q, token]);
+
+  useEffect(() => { if (!open) return; const close = () => setOpen(false); window.addEventListener('click', close); return () => window.removeEventListener('click', close); }, [open]);
+
+  const hasResults = Boolean(results && (results.users.length || results.properties.length || results.tenants.length || results.units.length));
+
+  return <div className="admin-search" onClick={(event) => event.stopPropagation()}>
+    <input type="search" placeholder="Search users, properties, tenants, units…" value={q} onFocus={() => setOpen(true)} onChange={(event) => { setQ(event.target.value); setOpen(true); }} aria-label="Global admin search" />
+    {open && q.trim().length >= 2 && <div className="admin-search-results">
+      {!hasResults && <p className="empty-state">No matches.</p>}
+      {results?.users.map((user) => <a key={user.id} className="admin-search-row" href={`/admin/users/${user.id}`}><span className="admin-search-kind">USER</span><strong>{user.fullName}</strong><small>{user.email} · {user.status}</small></a>)}
+      {results?.properties.map((property) => <a key={property.id} className="admin-search-row" href={`/admin/properties/${property.id}`}><span className="admin-search-kind">PROPERTY</span><strong>{property.name}</strong><small>Owner: {property.owner.fullName} · {property.unitCount} units · {property.tenantCount} occupied</small></a>)}
+      {results?.tenants.map((tenant) => <a key={tenant.id} className="admin-search-row" href={tenant.property ? `/admin/properties/${tenant.property.id}` : '/admin/tenants'}><span className="admin-search-kind">TENANT</span><strong>{tenant.name}</strong><small>{tenant.property?.name ?? 'Unassigned'}{tenant.unitNo ? ` · Unit ${tenant.unitNo}` : ''}</small></a>)}
+      {results?.units.map((unit) => <a key={unit.id} className="admin-search-row" href={`/admin/properties/${unit.property.id}`}><span className="admin-search-kind">UNIT</span><strong>Unit {unit.unitNo}</strong><small>{unit.property.name} · {unit.status}</small></a>)}
+    </div>}
+  </div>;
+}
+
+// Plain <table> renderer shared by every admin list screen (Properties,
+// Units, Tenants, Payments, Rent bills, Repairs): columns + pre-rendered
+// row cells in, a scrollable table and Previous/Next pagination out. Every
+// admin list endpoint returns { items, total } for a fixed page size, so
+// paging is just tracking `skip` in the parent and calling onPageChange.
+function AdminTable({ columns, rows, total, skip, take, onPageChange, loading, emptyMessage }: { columns: Array<{ key: string; header: string; align?: 'left' | 'right' }>; rows: Array<Record<string, ReactNode>>; total: number; skip: number; take: number; onPageChange: (skip: number) => void; loading?: boolean; emptyMessage?: string }) {
+  return <>
+    <div className="admin-table-wrap">
+      <table className="admin-table">
+        <thead><tr>{columns.map((column) => <th key={column.key} style={column.align === 'right' ? { textAlign: 'right' } : undefined}>{column.header}</th>)}</tr></thead>
+        <tbody>
+          {rows.length === 0 && <tr><td colSpan={columns.length} className="empty-state">{loading ? 'Loading…' : (emptyMessage ?? 'No records found.')}</td></tr>}
+          {rows.map((row, index) => <tr key={index}>{columns.map((column) => <td key={column.key} style={column.align === 'right' ? { textAlign: 'right' } : undefined}>{row[column.key]}</td>)}</tr>)}
+        </tbody>
+      </table>
+    </div>
+    <div className="admin-pagination">
+      <button type="button" className="quiet-button" disabled={skip === 0 || loading} onClick={() => onPageChange(Math.max(0, skip - take))}>Previous</button>
+      <span>{total === 0 ? '0' : `${skip + 1}–${Math.min(skip + take, total)}`} of {total}</span>
+      <button type="button" className="quiet-button" disabled={skip + take >= total || loading} onClick={() => onPageChange(skip + take)}>Next</button>
+    </div>
+  </>;
+}
+
+type AdminOverviewData = {
+  users: { total: number; active: number; suspended: number; disabled: number; unverified: number };
+  portfolio: { totalOwners: number; totalProperties: number; totalUnits: number; occupiedUnits: number; availableUnits: number; totalTenants: number; totalLeases: number; totalRentBills: number; totalPayments: number };
+  billing: { thisMonthIncome: string; totalOutstanding: string };
+  repairs: { open: number; inProgress: number; completed: number; cancelled: number };
+  growth: Array<{ month: string; newUsers: number; newProperties: number; newTenants: number; income: string; repairCost: string }>;
+};
+type AdminActivity = { id: string; action: string; createdAt: string; actor: { fullName: string } | null };
+
+// The Admin Control Center home page: platform-wide metrics, a 6-month
+// growth trend (new users/properties/tenants), a revenue trend (income vs.
+// repair cost), occupancy and repair-pipeline donuts, and a recent-activity
+// feed pulled straight from the audit log (no fabricated activity — this is
+// GET /admin/audit-logs?take=10, the same data the Audit logs page shows in
+// full).
+function AdminOverview({ token }: { token: string }) {
+  const [overview, setOverview] = useState<AdminOverviewData | null>(null);
+  const [activity, setActivity] = useState<AdminActivity[]>([]);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    Promise.all([
+      fetch(`${apiUrl}/admin/overview`, { headers: { Authorization: `Bearer ${token}` } }),
+      fetch(`${apiUrl}/admin/audit-logs?take=10`, { headers: { Authorization: `Bearer ${token}` } }),
+    ]).then(async ([overviewResponse, activityResponse]) => {
+      if (!overviewResponse.ok || !activityResponse.ok) throw new Error('Admin access is required.');
+      return Promise.all([overviewResponse.json(), activityResponse.json()]);
+    }).then(([nextOverview, nextActivity]) => { setOverview(nextOverview); setActivity(nextActivity); }).catch((reason: Error) => setError(reason.message));
+  }, [token]);
+
+  const growthMax = overview ? Math.max(...overview.growth.flatMap((item) => [item.newUsers, item.newProperties, item.newTenants]), 1) : 1;
+  const revenueMax = overview ? Math.max(...overview.growth.flatMap((item) => [Number(item.income), Number(item.repairCost)]), 1) : 1;
+  const monthLabel = (ym: string) => new Date(`${ym}-02T00:00:00Z`).toLocaleDateString(undefined, { month: 'short', year: '2-digit', timeZone: 'UTC' });
+
+  return <AdminLayout active="dashboard" token={token} kicker="RMS / ADMINISTRATION" title="Control center.">
+    {error && <p className="error" role="status">{error}</p>}
+    {overview && <>
+      <section className="metric-grid">
+        <Metric label="Total users" value={String(overview.users.total)} note={`${overview.users.active} active · ${overview.users.unverified} unverified`} accent="green" />
+        <Metric label="Suspended / disabled" value={String(overview.users.suspended + overview.users.disabled)} note={`${overview.users.suspended} suspended · ${overview.users.disabled} disabled`} accent="amber" />
+        <Metric label="Owners" value={String(overview.portfolio.totalOwners)} note="Accounts with OWNER_ADMIN" accent="blue" />
+        <Metric label="Properties" value={String(overview.portfolio.totalProperties)} note={`${overview.portfolio.totalTenants} active tenants`} accent="green" />
+        <Metric label="Units occupied" value={`${overview.portfolio.occupiedUnits} / ${overview.portfolio.totalUnits}`} note={`${overview.portfolio.availableUnits} vacant`} accent="blue" />
+        <Metric label="Leases · bills · payments" value={String(overview.portfolio.totalLeases)} note={`${overview.portfolio.totalRentBills} bills · ${overview.portfolio.totalPayments} payments`} accent="green" />
+        <Metric label="This month income" value={money(overview.billing.thisMonthIncome)} note="Platform-wide" accent="green" />
+        <Metric label="Total outstanding" value={money(overview.billing.totalOutstanding)} note="Across open bills" accent="amber" />
+      </section>
+      <section className="dashboard-grid">
+        <article className="dashboard-card trend-card">
+          <div className="card-heading"><div><p className="card-kicker">Platform growth</p><h2>New accounts, last 6 months</h2></div></div>
+          <div className="chart-legend"><span className="legend-chip"><i className="legend-dot" style={{ background: '#5e8b6e' }} />Users</span><span className="legend-chip"><i className="legend-dot" style={{ background: '#7b9cb0' }} />Properties</span><span className="legend-chip"><i className="legend-dot" style={{ background: '#d4a25d' }} />Tenants</span></div>
+          <div className="bars">{overview.growth.map((item) => <div className="bar-group" key={item.month}><div className="bar-track admin-triple-bar"><div className="bar" style={{ height: `${Math.max(3, item.newUsers / growthMax * 100)}%`, background: '#5e8b6e' }} title={`Users: ${item.newUsers}`} /><div className="bar" style={{ height: `${Math.max(3, item.newProperties / growthMax * 100)}%`, background: '#7b9cb0' }} title={`Properties: ${item.newProperties}`} /><div className="bar" style={{ height: `${Math.max(3, item.newTenants / growthMax * 100)}%`, background: '#d4a25d' }} title={`Tenants: ${item.newTenants}`} /></div><span>{monthLabel(item.month)}</span></div>)}</div>
+        </article>
+        <article className="dashboard-card trend-card">
+          <div className="card-heading"><div><p className="card-kicker">Revenue</p><h2>Income vs. repair cost</h2></div></div>
+          <div className="chart-legend"><span className="legend-chip"><i className="legend-dot" style={{ background: '#5e8b6e' }} />Income</span><span className="legend-chip"><i className="legend-dot" style={{ background: '#bd7c75' }} />Repairs</span></div>
+          <div className="bars">{overview.growth.map((item) => <div className="bar-group" key={item.month}><div className="bar-track"><div className="bar" style={{ height: `${Math.max(3, Number(item.income) / revenueMax * 100)}%` }} title={`Income: ${money(item.income)}`} /><div className="bar bar-repair" style={{ height: `${Number(item.repairCost) > 0 ? Math.max(3, Number(item.repairCost) / revenueMax * 100) : 0}%` }} title={`Repairs: ${money(item.repairCost)}`} /></div><span>{monthLabel(item.month)}</span></div>)}</div>
+        </article>
+        <article className="dashboard-card"><div className="card-heading"><div><p className="card-kicker">Portfolio</p><h2>Occupancy</h2></div></div><PieChart segments={[{ label: 'Occupied', value: overview.portfolio.occupiedUnits, color: '#5e8b6e' }, { label: 'Vacant', value: overview.portfolio.availableUnits, color: '#c1d0c4' }]} centerLabel={String(overview.portfolio.occupiedUnits)} centerNote={`of ${overview.portfolio.totalUnits} units`} /></article>
+        <article className="dashboard-card"><div className="card-heading"><div><p className="card-kicker">Maintenance</p><h2>Repairs</h2></div></div><PieChart segments={[{ label: 'Open', value: overview.repairs.open, color: '#a2473b' }, { label: 'In progress', value: overview.repairs.inProgress, color: '#d4a25d' }, { label: 'Completed', value: overview.repairs.completed, color: '#5e8b6e' }, { label: 'Cancelled', value: overview.repairs.cancelled, color: '#8a978f' }]} centerLabel={String(overview.repairs.open + overview.repairs.inProgress)} centerNote="active repairs" /></article>
+        <article className="dashboard-card payments-card"><div className="card-heading"><div><p className="card-kicker">Security</p><h2>Recent activity</h2></div><a href="/admin/audit-logs">View all</a></div>{activity.length === 0 && <p className="empty-state">No recent activity.</p>}{activity.map((log) => <div className="payment-row" key={log.id}><div><strong>{log.action.replace(/_/g, ' ')}</strong><small>{log.actor?.fullName ?? 'Deleted user'} · {new Date(log.createdAt).toLocaleString()}</small></div></div>)}</article>
+      </section>
+    </>}
+  </AdminLayout>;
+}
+
+type AdminUser = { id: string; fullName: string; email: string; phone: string; status: string; emailVerifiedAt: string | null; lastLoginAt: string | null; createdAt: string; userRoles?: Array<{ role: { id: string; name: string } }>; _count?: { properties: number; tenants: number; units: number } };
+
+// Platform accounts: search/filter, verification resend, status toggle,
+// role change, and the permanent-delete danger action. Split out of the old
+// single-page Admin screen so it lives at its own route (/admin/users) per
+// the requested admin routing structure.
+function AdminUsersPage({ token }: { token: string }) {
   const [users, setUsers] = useState<AdminUser[]>([]);
+  const [total, setTotal] = useState(0);
+  const [skip, setSkip] = useState(0);
+  const take = 25;
   const [roles, setRoles] = useState<Array<{ id: string; name: string }>>([]);
-  const [logs, setLogs] = useState<AdminLog[]>([]);
   const [message, setMessage] = useState('');
-  const [cleaning, setCleaning] = useState(false);
   const [search, setSearch] = useState('');
-  const [statusFilter, setStatusFilter] = useState('ALL');
+  const [statusFilter, setStatusFilter] = useState('');
+  const [loading, setLoading] = useState(true);
   const [deletingUserId, setDeletingUserId] = useState<string | null>(null);
   const [resendingUserId, setResendingUserId] = useState<string | null>(null);
 
-  const load = () => Promise.all([
-    fetch(`${apiUrl}/admin/overview`, { headers: { Authorization: `Bearer ${token}` } }),
-    fetch(`${apiUrl}/admin/users`, { headers: { Authorization: `Bearer ${token}` } }),
-    fetch(`${apiUrl}/admin/roles`, { headers: { Authorization: `Bearer ${token}` } }),
-    fetch(`${apiUrl}/admin/audit-logs`, { headers: { Authorization: `Bearer ${token}` } }),
-  ]).then(async ([overviewResponse, usersResponse, rolesResponse, logsResponse]) => {
-    if (!overviewResponse.ok || !usersResponse.ok || !rolesResponse.ok || !logsResponse.ok) throw new Error('Admin access is required.');
-    return Promise.all([overviewResponse.json(), usersResponse.json(), rolesResponse.json(), logsResponse.json()]);
-  }).then(([nextOverview, nextUsers, nextRoles, nextLogs]) => { setOverview(nextOverview); setUsers(nextUsers); setRoles(nextRoles); setLogs(nextLogs); });
+  const load = () => {
+    setLoading(true);
+    const params = new URLSearchParams({ skip: String(skip), take: String(take) });
+    if (search.trim()) params.set('q', search.trim());
+    if (statusFilter) params.set('status', statusFilter);
+    return Promise.all([
+      fetch(`${apiUrl}/admin/users?${params.toString()}`, { headers: { Authorization: `Bearer ${token}` } }),
+      fetch(`${apiUrl}/admin/roles`, { headers: { Authorization: `Bearer ${token}` } }),
+    ]).then(async ([usersResponse, rolesResponse]) => {
+      if (!usersResponse.ok || !rolesResponse.ok) throw new Error('Admin access is required.');
+      return Promise.all([usersResponse.json(), rolesResponse.json()]);
+    }).then(([nextUsers, nextRoles]) => { setUsers(nextUsers.items); setTotal(nextUsers.total); setRoles(nextRoles); })
+      .finally(() => setLoading(false));
+  };
 
-  useEffect(() => { void load().catch((error: Error) => setMessage(error.message)); }, [token]);
+  useEffect(() => { void load().catch((error: Error) => setMessage(error.message)); }, [token, skip, search, statusFilter]);
 
   async function updateStatus(user: AdminUser) {
     setMessage('');
@@ -1487,6 +1706,440 @@ function Admin({ token }: { token: string }) {
     }
   }
 
+  return <AdminLayout active="users" token={token} kicker="RMS / ADMINISTRATION" title="Users.">
+    {message && <p className="error" role="status">{message}</p>}
+    <article className="dashboard-card payments-card">
+      <div className="card-heading"><div><p className="card-kicker">Accounts</p><h2>{total} total</h2></div></div>
+      <div className="admin-toolbar">
+        <input type="search" placeholder="Search by name or email" value={search} onChange={(event) => { setSearch(event.target.value); setSkip(0); }} aria-label="Search users" />
+        <select aria-label="Filter by status" value={statusFilter} onChange={(event) => { setStatusFilter(event.target.value); setSkip(0); }}><option value="">All statuses</option><option value="ACTIVE">Active</option><option value="SUSPENDED">Suspended</option><option value="DISABLED">Disabled</option></select>
+      </div>
+      {!loading && users.length === 0 && <p className="empty-state">No users match this search.</p>}
+      {users.map((user) => <div className="payment-row" key={user.id}>
+        <div><a href={`/admin/users/${user.id}`}><strong>{user.fullName}</strong></a><small>{user.email} · {user.phone}</small><small>{user._count?.properties ?? 0} properties · {user._count?.units ?? 0} units · {user._count?.tenants ?? 0} tenants</small></div>
+        <div className="user-row-actions">
+          <span className={`tenant-status ${user.status.toLowerCase()}`}>{user.status}</span>
+          {!user.emailVerifiedAt && <span className="tenant-status unverified-badge">Unverified</span>}
+          {!user.emailVerifiedAt && <button className="quiet-button export-button" disabled={resendingUserId === user.id} onClick={() => resendVerification(user)}>{resendingUserId === user.id ? 'Sending…' : 'Resend link'}</button>}
+          <select aria-label={`Role for ${user.fullName}`} value={user.userRoles?.[0]?.role.id ?? ''} onChange={(event) => updateRole(user, event.target.value)}>{roles.map((role) => <option value={role.id} key={role.id}>{role.name}</option>)}</select>
+          <button className="quiet-button export-button" onClick={() => updateStatus(user)}>{user.status === 'ACTIVE' ? 'Suspend' : 'Enable'}</button>
+          <button className="danger-button" disabled={deletingUserId === user.id} onClick={() => deleteUser(user)}>{deletingUserId === user.id ? 'Deleting…' : 'Delete'}</button>
+        </div>
+      </div>)}
+      <div className="admin-pagination">
+        <button type="button" className="quiet-button" disabled={skip === 0 || loading} onClick={() => setSkip(Math.max(0, skip - take))}>Previous</button>
+        <span>{total === 0 ? '0' : `${skip + 1}–${Math.min(skip + take, total)}`} of {total}</span>
+        <button type="button" className="quiet-button" disabled={skip + take >= total || loading} onClick={() => setSkip(skip + take)}>Next</button>
+      </div>
+    </article>
+  </AdminLayout>;
+}
+
+type AdminUserDetail = AdminUser & { userRoles: Array<{ role: { id: string; name: string } }>; stats: { properties: number; units: number; tenants: number; activeLeases: number; outstanding: string; paymentsThisMonth: string; openRepairs: number } };
+
+// "View as platform data" (spec section 8): one account's profile plus a
+// snapshot of everything it owns, with a shortcut into that owner's
+// properties (pre-filled into the Properties search by owner email).
+function AdminUserDetailPage({ token, userId }: { token: string; userId: string }) {
+  const [user, setUser] = useState<AdminUserDetail | null>(null);
+  const [error, setError] = useState('');
+
+  useEffect(() => { fetch(`${apiUrl}/admin/users/${userId}`, { headers: { Authorization: `Bearer ${token}` } }).then((response) => { if (!response.ok) throw new Error('User not found.'); return response.json(); }).then(setUser).catch((reason: Error) => setError(reason.message)); }, [token, userId]);
+
+  return <AdminLayout active="users" token={token} kicker="RMS / ADMINISTRATION" title={user?.fullName ?? 'User'}>
+    {error && <p className="error" role="status">{error}</p>}
+    {user && <>
+      <section className="metric-grid">
+        <Metric label="Properties" value={String(user.stats.properties)} accent="green" />
+        <Metric label="Units" value={String(user.stats.units)} accent="blue" />
+        <Metric label="Tenants" value={String(user.stats.tenants)} note={`${user.stats.activeLeases} active leases`} accent="green" />
+        <Metric label="Outstanding" value={money(user.stats.outstanding)} accent="amber" />
+        <Metric label="Payments this month" value={money(user.stats.paymentsThisMonth)} accent="green" />
+        <Metric label="Open repairs" value={String(user.stats.openRepairs)} accent="rose" />
+      </section>
+      <article className="dashboard-card">
+        <div className="card-heading"><div><p className="card-kicker">Account</p><h2>Profile</h2></div></div>
+        <div className="settlement-preview">
+          <div><span>Email</span><strong>{user.email}</strong></div>
+          <div><span>Phone</span><strong>{user.phone}</strong></div>
+          <div><span>Status</span><strong>{user.status}</strong></div>
+          <div><span>Role</span><strong>{user.userRoles[0]?.role.name ?? '—'}</strong></div>
+          <div><span>Verified</span><strong>{user.emailVerifiedAt ? 'Yes' : 'No'}</strong></div>
+          <div><span>Joined</span><strong>{new Date(user.createdAt).toLocaleDateString()}</strong></div>
+        </div>
+      </article>
+      <p className="form-note"><a href={`/admin/properties?q=${encodeURIComponent(user.email)}`}>View this owner's properties</a> · <a href="/admin/users">Back to users</a></p>
+    </>}
+  </AdminLayout>;
+}
+
+type AdminPropertyRow = { id: string; name: string; address: string; propertyType: string; createdAt: string; owner: { id: string; fullName: string; email: string }; unitCount: number; occupiedUnits: number; vacantUnits: number };
+
+// Platform-wide Properties list (spec section 9): every owner's properties,
+// searchable by name/address/owner, paginated via GET /admin/properties.
+function AdminPropertiesPage({ token }: { token: string }) {
+  const [items, setItems] = useState<AdminPropertyRow[]>([]);
+  const [total, setTotal] = useState(0);
+  const [skip, setSkip] = useState(0);
+  const take = 25;
+  const [q, setQ] = useState(() => new URLSearchParams(window.location.search).get('q') ?? '');
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    setLoading(true);
+    fetch(`${apiUrl}/admin/properties?skip=${skip}&take=${take}&q=${encodeURIComponent(q)}`, { headers: { Authorization: `Bearer ${token}` } })
+      .then((response) => response.json())
+      .then((body) => { setItems(body.items); setTotal(body.total); })
+      .finally(() => setLoading(false));
+  }, [token, skip, q]);
+
+  const columns = [{ key: 'name', header: 'Property' }, { key: 'owner', header: 'Owner' }, { key: 'units', header: 'Units', align: 'right' as const }, { key: 'occupancy', header: 'Occupied / vacant', align: 'right' as const }, { key: 'created', header: 'Created' }];
+  const rows = items.map((property) => ({
+    name: <a href={`/admin/properties/${property.id}`}><strong>{property.name}</strong></a>,
+    owner: <><a href={`/admin/users/${property.owner.id}`}>{property.owner.fullName}</a><br /><small>{property.owner.email}</small></>,
+    units: property.unitCount,
+    occupancy: `${property.occupiedUnits} / ${property.vacantUnits}`,
+    created: new Date(property.createdAt).toLocaleDateString(),
+  }));
+
+  return <AdminLayout active="properties" token={token} kicker="RMS / ADMINISTRATION" title="Properties.">
+    <article className="dashboard-card">
+      <div className="admin-toolbar"><input type="search" placeholder="Search by name, address, or owner" value={q} onChange={(event) => { setQ(event.target.value); setSkip(0); }} aria-label="Search properties" /></div>
+      <AdminTable columns={columns} rows={rows} total={total} skip={skip} take={take} onPageChange={setSkip} loading={loading} emptyMessage="No properties match this search." />
+    </article>
+  </AdminLayout>;
+}
+
+type AdminPropertyDetail = {
+  id: string; name: string; address: string; phone: string; propertyType: string; createdAt: string;
+  owner: { id: string; fullName: string; email: string; phone: string };
+  units: Array<{ id: string; unitNo: string; unitType: string; rent: string; status: string; currentTenant: { id: string; name: string; status: string } | null }>;
+  tenants: Array<{ id: string; name: string; phone: string; status: string }>;
+  leases: Array<{ id: string; monthlyRent: string; status: string; startDate: string; endDate: string | null; tenant: { id: string; name: string }; unit: { id: string; unitNo: string } }>;
+  billsByStatus: Array<{ status: string; count: number; total: string; paidAmount: string }>;
+  outstanding: string;
+  recentPayments: Array<{ id: string; amount: string; paidOn: string; method: string; tenantName: string; unitNo: string }>;
+  repairsByStatus: Array<{ status: string; count: number; cost: string }>;
+  deleteImpact: { units: number; tenants: number; leases: number; rentBills: number; payments: number; repairs: number; settlements: number };
+};
+
+const PROPERTY_DETAIL_TABS = ['overview', 'units', 'tenants', 'leases', 'bills', 'payments', 'repairs'] as const;
+
+// Administrative property detail (spec sections 10-12): the full structure
+// of one property across tabs, plus the Danger Zone hard-delete with a
+// typed-name confirmation and real record counts sourced from the backend's
+// deleteImpact (never estimated on the frontend).
+function AdminPropertyDetailPage({ token, propertyId }: { token: string; propertyId: string }) {
+  const [property, setProperty] = useState<AdminPropertyDetail | null>(null);
+  const [error, setError] = useState('');
+  const [tab, setTab] = useState<(typeof PROPERTY_DETAIL_TABS)[number]>('overview');
+  const [showDelete, setShowDelete] = useState(false);
+  const [confirmText, setConfirmText] = useState('');
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState('');
+
+  useEffect(() => {
+    fetch(`${apiUrl}/admin/properties/${propertyId}`, { headers: { Authorization: `Bearer ${token}` } }).then((response) => { if (!response.ok) throw new Error('Property not found.'); return response.json(); }).then(setProperty).catch((reason: Error) => setError(reason.message));
+  }, [token, propertyId]);
+
+  async function confirmDelete() {
+    if (!property) return;
+    setDeleting(true); setDeleteError('');
+    try {
+      const csrfResponse = await fetch(`${apiUrl}/auth/csrf`, { credentials: 'include' });
+      const { csrfToken } = await csrfResponse.json();
+      const response = await fetch(`${apiUrl}/admin/properties/${propertyId}/delete`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}`, 'X-CSRF-Token': csrfToken }, credentials: 'include', body: JSON.stringify({ confirmation: confirmText }) });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.message ?? 'Unable to delete this property.');
+      window.location.href = '/admin/properties';
+    } catch (reason) {
+      setDeleteError(reason instanceof Error ? reason.message : 'Unable to delete this property.');
+      setDeleting(false);
+    }
+  }
+
+  return <AdminLayout active="properties" token={token} kicker="RMS / ADMINISTRATION" title={property?.name ?? 'Property'}>
+    {error && <p className="error" role="status">{error}</p>}
+    {property && <>
+      <section className="metric-grid">
+        <Metric label="Units" value={String(property.units.length)} accent="green" />
+        <Metric label="Occupied" value={String(property.units.filter((unit) => unit.status === 'OCCUPIED').length)} accent="blue" />
+        <Metric label="Tenants" value={String(property.tenants.length)} accent="green" />
+        <Metric label="Outstanding" value={money(property.outstanding)} accent="amber" />
+      </section>
+      <p className="subtle">{property.address} · Owner: <a href={`/admin/users/${property.owner.id}`}>{property.owner.fullName}</a> ({property.owner.email})</p>
+      <div className="tab-bar">{PROPERTY_DETAIL_TABS.map((key) => <button key={key} type="button" className={tab === key ? 'tab active' : 'tab'} onClick={() => setTab(key)}>{key.charAt(0).toUpperCase() + key.slice(1)}</button>)}</div>
+
+      {tab === 'overview' && <section className="dashboard-grid">
+        <article className="dashboard-card"><div className="card-heading"><div><p className="card-kicker">Billing</p><h2>Bills by status</h2></div></div>{property.billsByStatus.length === 0 && <p className="empty-state">No bills yet.</p>}{property.billsByStatus.map((row) => <div className="payment-row" key={row.status}><div><strong>{row.status}</strong><small>{row.count} bills</small></div><b>{money(row.total)}</b></div>)}</article>
+        <article className="dashboard-card"><div className="card-heading"><div><p className="card-kicker">Maintenance</p><h2>Repairs by status</h2></div></div>{property.repairsByStatus.length === 0 && <p className="empty-state">No repairs yet.</p>}{property.repairsByStatus.map((row) => <div className="payment-row" key={row.status}><div><strong>{row.status}</strong><small>{row.count} repairs</small></div><b>{money(row.cost)}</b></div>)}</article>
+      </section>}
+
+      {tab === 'units' && <article className="dashboard-card">{property.units.length === 0 && <p className="empty-state">No units.</p>}{property.units.map((unit) => <div className="payment-row" key={unit.id}><div><strong>Unit {unit.unitNo}</strong><small>{unit.unitType} · {money(unit.rent)}</small></div><div><span className={`tenant-status ${unit.status.toLowerCase()}`}>{unit.status}</span>{unit.currentTenant && <small> · {unit.currentTenant.name}</small>}</div></div>)}</article>}
+
+      {tab === 'tenants' && <article className="dashboard-card">{property.tenants.length === 0 && <p className="empty-state">No tenants.</p>}{property.tenants.map((tenant) => <div className="payment-row" key={tenant.id}><div><strong>{tenant.name}</strong><small>{tenant.phone}</small></div><span className={`tenant-status ${tenant.status.toLowerCase()}`}>{tenant.status}</span></div>)}</article>}
+
+      {tab === 'leases' && <article className="dashboard-card">{property.leases.length === 0 && <p className="empty-state">No leases.</p>}{property.leases.map((lease) => <div className="payment-row" key={lease.id}><div><strong>{lease.tenant.name}</strong><small>Unit {lease.unit.unitNo} · {new Date(lease.startDate).toLocaleDateString()}{lease.endDate ? ` – ${new Date(lease.endDate).toLocaleDateString()}` : ''}</small></div><div><span className={`tenant-status ${lease.status.toLowerCase()}`}>{lease.status}</span> <b>{money(lease.monthlyRent)}</b></div></div>)}</article>}
+
+      {tab === 'bills' && <article className="dashboard-card">{property.billsByStatus.length === 0 && <p className="empty-state">No bills yet.</p>}{property.billsByStatus.map((row) => <div className="payment-row" key={row.status}><div><strong>{row.status}</strong><small>{row.count} bills · {money(row.paidAmount)} collected</small></div><b>{money(row.total)}</b></div>)}</article>}
+
+      {tab === 'payments' && <article className="dashboard-card payments-card">{property.recentPayments.length === 0 && <p className="empty-state">No payments recorded yet.</p>}{property.recentPayments.map((payment) => <div className="payment-row" key={payment.id}><div><strong>{payment.tenantName}</strong><small>Unit {payment.unitNo} · {new Date(payment.paidOn).toLocaleDateString()}</small></div><b>{money(payment.amount)}</b></div>)}</article>}
+
+      {tab === 'repairs' && <article className="dashboard-card">{property.repairsByStatus.length === 0 && <p className="empty-state">No repairs yet.</p>}{property.repairsByStatus.map((row) => <div className="payment-row" key={row.status}><div><strong>{row.status}</strong><small>{row.count} repairs</small></div><b>{money(row.cost)}</b></div>)}</article>}
+
+      <article className="dashboard-card danger-card">
+        <div className="card-heading"><div><p className="card-kicker">Danger zone</p><h2>Delete this property</h2></div></div>
+        <p className="subtle">This permanently deletes the property and everything scoped to its units: {property.deleteImpact.units} units, {property.deleteImpact.tenants} tenants, {property.deleteImpact.leases} leases, {property.deleteImpact.rentBills} rent bills, {property.deleteImpact.payments} payments, {property.deleteImpact.repairs} repairs, and {property.deleteImpact.settlements} settlements. This cannot be undone.</p>
+        <button className="danger-button" onClick={() => { setShowDelete(true); setConfirmText(''); setDeleteError(''); }}>Delete property</button>
+      </article>
+
+      {showDelete && <div className="modal-overlay" onClick={() => !deleting && setShowDelete(false)}>
+        <div className="modal-panel" onClick={(event) => event.stopPropagation()}>
+          <h2>Delete {property.name}?</h2>
+          <p className="subtle">This will permanently delete:</p>
+          <ul className="modal-impact-list">
+            <li>{property.deleteImpact.units} units</li>
+            <li>{property.deleteImpact.tenants} tenants</li>
+            <li>{property.deleteImpact.leases} leases</li>
+            <li>{property.deleteImpact.rentBills} rent bills</li>
+            <li>{property.deleteImpact.payments} payment records</li>
+            <li>{property.deleteImpact.repairs} repairs</li>
+            <li>{property.deleteImpact.settlements} settlements</li>
+          </ul>
+          <p className="subtle">This action cannot be undone.</p>
+          <label>Property name<input value={confirmText} onChange={(event) => setConfirmText(event.target.value)} placeholder={property.name} autoFocus /></label>
+          {deleteError && <p className="error">{deleteError}</p>}
+          <div className="report-actions">
+            <button type="button" className="quiet-button" disabled={deleting} onClick={() => setShowDelete(false)}>Cancel</button>
+            <button type="button" className="danger-button" disabled={deleting || confirmText !== property.name} onClick={confirmDelete}>{deleting ? 'Deleting…' : 'Delete permanently'}</button>
+          </div>
+        </div>
+      </div>}
+    </>}
+  </AdminLayout>;
+}
+
+type AdminUnitRow = { id: string; unitNo: string; unitType: string; rent: string; status: string; owner: { id: string; fullName: string; email: string }; property: { id: string; name: string }; currentTenant: { id: string; name: string } | null };
+
+// Platform-wide Units list (spec section 14).
+function AdminUnitsPage({ token }: { token: string }) {
+  const [items, setItems] = useState<AdminUnitRow[]>([]);
+  const [total, setTotal] = useState(0);
+  const [skip, setSkip] = useState(0);
+  const take = 25;
+  const [q, setQ] = useState('');
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => { setLoading(true); fetch(`${apiUrl}/admin/units?skip=${skip}&take=${take}&q=${encodeURIComponent(q)}`, { headers: { Authorization: `Bearer ${token}` } }).then((response) => response.json()).then((body) => { setItems(body.items); setTotal(body.total); }).finally(() => setLoading(false)); }, [token, skip, q]);
+
+  const columns = [{ key: 'unit', header: 'Unit' }, { key: 'property', header: 'Property' }, { key: 'owner', header: 'Owner' }, { key: 'tenant', header: 'Tenant' }, { key: 'rent', header: 'Rent', align: 'right' as const }, { key: 'status', header: 'Status' }];
+  const rows = items.map((unit) => ({
+    unit: unit.unitNo,
+    property: <a href={`/admin/properties/${unit.property.id}`}>{unit.property.name}</a>,
+    owner: <><a href={`/admin/users/${unit.owner.id}`}>{unit.owner.fullName}</a><br /><small>{unit.owner.email}</small></>,
+    tenant: unit.currentTenant?.name ?? '—',
+    rent: money(unit.rent),
+    status: <span className={`tenant-status ${unit.status.toLowerCase()}`}>{unit.status}</span>,
+  }));
+
+  return <AdminLayout active="units" token={token} kicker="RMS / ADMINISTRATION" title="Units.">
+    <article className="dashboard-card">
+      <div className="admin-toolbar"><input type="search" placeholder="Search by unit number or property" value={q} onChange={(event) => { setQ(event.target.value); setSkip(0); }} aria-label="Search units" /></div>
+      <AdminTable columns={columns} rows={rows} total={total} skip={skip} take={take} onPageChange={setSkip} loading={loading} emptyMessage="No units match this search." />
+    </article>
+  </AdminLayout>;
+}
+
+type AdminTenantRow = { id: string; name: string; phone: string; status: string; owner: { id: string; fullName: string; email: string }; property: { id: string; name: string } | null; unit: { id: string; unitNo: string; rent: string } | null; leaseStatus: string | null; rent: string | null; outstanding: string };
+
+// Platform-wide Tenants list (spec section 13).
+function AdminTenantsPage({ token }: { token: string }) {
+  const [items, setItems] = useState<AdminTenantRow[]>([]);
+  const [total, setTotal] = useState(0);
+  const [skip, setSkip] = useState(0);
+  const take = 25;
+  const [q, setQ] = useState('');
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => { setLoading(true); fetch(`${apiUrl}/admin/tenants?skip=${skip}&take=${take}&q=${encodeURIComponent(q)}`, { headers: { Authorization: `Bearer ${token}` } }).then((response) => response.json()).then((body) => { setItems(body.items); setTotal(body.total); }).finally(() => setLoading(false)); }, [token, skip, q]);
+
+  const columns = [{ key: 'name', header: 'Tenant' }, { key: 'property', header: 'Property / unit' }, { key: 'owner', header: 'Owner' }, { key: 'lease', header: 'Lease' }, { key: 'rent', header: 'Rent', align: 'right' as const }, { key: 'outstanding', header: 'Outstanding', align: 'right' as const }];
+  const rows = items.map((tenant) => ({
+    name: <><strong>{tenant.name}</strong><br /><small>{tenant.phone}</small></>,
+    property: tenant.property ? <a href={`/admin/properties/${tenant.property.id}`}>{tenant.property.name}{tenant.unit ? ` / ${tenant.unit.unitNo}` : ''}</a> : '—',
+    owner: <><a href={`/admin/users/${tenant.owner.id}`}>{tenant.owner.fullName}</a><br /><small>{tenant.owner.email}</small></>,
+    lease: tenant.leaseStatus ? <span className={`tenant-status ${tenant.leaseStatus.toLowerCase()}`}>{tenant.leaseStatus}</span> : '—',
+    rent: tenant.rent ? money(tenant.rent) : '—',
+    outstanding: Number(tenant.outstanding) > 0 ? money(tenant.outstanding) : '—',
+  }));
+
+  return <AdminLayout active="tenants" token={token} kicker="RMS / ADMINISTRATION" title="Tenants.">
+    <article className="dashboard-card">
+      <div className="admin-toolbar"><input type="search" placeholder="Search by name, phone, or email" value={q} onChange={(event) => { setQ(event.target.value); setSkip(0); }} aria-label="Search tenants" /></div>
+      <AdminTable columns={columns} rows={rows} total={total} skip={skip} take={take} onPageChange={setSkip} loading={loading} emptyMessage="No tenants match this search." />
+    </article>
+  </AdminLayout>;
+}
+
+type AdminPaymentRow = { id: string; amount: string; paidOn: string; method: string; owner: { id: string; fullName: string; email: string }; tenantName: string; unit: string; property: string; propertyId: string };
+
+// Platform-wide Payments list (spec section 15): owner/property/method/date
+// filters pushed into the API query string.
+function AdminPaymentsPage({ token }: { token: string }) {
+  const [items, setItems] = useState<AdminPaymentRow[]>([]);
+  const [total, setTotal] = useState(0);
+  const [skip, setSkip] = useState(0);
+  const take = 25;
+  const [q, setQ] = useState('');
+  const [method, setMethod] = useState('');
+  const [from, setFrom] = useState('');
+  const [to, setTo] = useState('');
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    setLoading(true);
+    const params = new URLSearchParams({ skip: String(skip), take: String(take) });
+    if (q.trim()) params.set('q', q.trim());
+    if (method) params.set('method', method);
+    if (from) params.set('from', from);
+    if (to) params.set('to', to);
+    fetch(`${apiUrl}/admin/payments?${params.toString()}`, { headers: { Authorization: `Bearer ${token}` } }).then((response) => response.json()).then((body) => { setItems(body.items); setTotal(body.total); }).finally(() => setLoading(false));
+  }, [token, skip, q, method, from, to]);
+
+  const columns = [{ key: 'date', header: 'Date' }, { key: 'tenant', header: 'Tenant' }, { key: 'property', header: 'Property / unit' }, { key: 'owner', header: 'Owner' }, { key: 'method', header: 'Method' }, { key: 'amount', header: 'Amount', align: 'right' as const }];
+  const rows = items.map((payment) => ({
+    date: new Date(payment.paidOn).toLocaleDateString(),
+    tenant: payment.tenantName,
+    property: <a href={`/admin/properties/${payment.propertyId}`}>{payment.property} / {payment.unit}</a>,
+    owner: <><a href={`/admin/users/${payment.owner.id}`}>{payment.owner.fullName}</a><br /><small>{payment.owner.email}</small></>,
+    method: payment.method.replace('_', ' '),
+    amount: money(payment.amount),
+  }));
+
+  return <AdminLayout active="payments" token={token} kicker="RMS / ADMINISTRATION" title="Payments.">
+    <article className="dashboard-card">
+      <div className="admin-toolbar">
+        <input type="search" placeholder="Search by owner, email, tenant, unit, or property" value={q} onChange={(event) => { setQ(event.target.value); setSkip(0); }} aria-label="Search payments" />
+        <select aria-label="Filter by method" value={method} onChange={(event) => { setMethod(event.target.value); setSkip(0); }}><option value="">All methods</option><option value="CASH">Cash</option><option value="BANK_TRANSFER">Bank transfer</option><option value="CARD">Card</option><option value="OTHER">Other</option></select>
+        <input type="date" aria-label="From date" value={from} onChange={(event) => { setFrom(event.target.value); setSkip(0); }} />
+        <input type="date" aria-label="To date" value={to} onChange={(event) => { setTo(event.target.value); setSkip(0); }} />
+      </div>
+      <AdminTable columns={columns} rows={rows} total={total} skip={skip} take={take} onPageChange={setSkip} loading={loading} emptyMessage="No payments match these filters." />
+    </article>
+  </AdminLayout>;
+}
+
+type AdminRentBillRow = { id: string; billMonth: string; dueDate: string; total: string; paidAmount: string; status: string; owner: { id: string; fullName: string; email: string }; tenantName: string; unit: string; property: string; propertyId: string };
+
+// Platform-wide rent-bill/billing list (spec section 16).
+function AdminRentBillsPage({ token }: { token: string }) {
+  const [items, setItems] = useState<AdminRentBillRow[]>([]);
+  const [total, setTotal] = useState(0);
+  const [skip, setSkip] = useState(0);
+  const take = 25;
+  const [q, setQ] = useState('');
+  const [status, setStatus] = useState('');
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    setLoading(true);
+    const params = new URLSearchParams({ skip: String(skip), take: String(take) });
+    if (q.trim()) params.set('q', q.trim());
+    if (status) params.set('status', status);
+    fetch(`${apiUrl}/admin/rent-bills?${params.toString()}`, { headers: { Authorization: `Bearer ${token}` } }).then((response) => response.json()).then((body) => { setItems(body.items); setTotal(body.total); }).finally(() => setLoading(false));
+  }, [token, skip, q, status]);
+
+  const columns = [{ key: 'month', header: 'Bill month' }, { key: 'due', header: 'Due date' }, { key: 'tenant', header: 'Tenant' }, { key: 'property', header: 'Property / unit' }, { key: 'owner', header: 'Owner' }, { key: 'status', header: 'Status' }, { key: 'total', header: 'Total', align: 'right' as const }];
+  const rows = items.map((bill) => ({
+    month: new Date(bill.billMonth).toLocaleDateString(undefined, { month: 'short', year: 'numeric' }),
+    due: new Date(bill.dueDate).toLocaleDateString(),
+    tenant: bill.tenantName,
+    property: <a href={`/admin/properties/${bill.propertyId}`}>{bill.property} / {bill.unit}</a>,
+    owner: <><a href={`/admin/users/${bill.owner.id}`}>{bill.owner.fullName}</a><br /><small>{bill.owner.email}</small></>,
+    status: <span className={`tenant-status ${bill.status.toLowerCase()}`}>{bill.status}</span>,
+    total: money(bill.total),
+  }));
+
+  return <AdminLayout active="bills" token={token} kicker="RMS / ADMINISTRATION" title="Rent bills.">
+    <article className="dashboard-card">
+      <div className="admin-toolbar">
+        <input type="search" placeholder="Search by owner, email, tenant, unit, or property" value={q} onChange={(event) => { setQ(event.target.value); setSkip(0); }} aria-label="Search rent bills" />
+        <select aria-label="Filter by status" value={status} onChange={(event) => { setStatus(event.target.value); setSkip(0); }}><option value="">All statuses</option><option value="DUE">Due</option><option value="PARTIAL">Partial</option><option value="LATE">Late</option><option value="PAID">Paid</option></select>
+      </div>
+      <AdminTable columns={columns} rows={rows} total={total} skip={skip} take={take} onPageChange={setSkip} loading={loading} emptyMessage="No bills match this filter." />
+    </article>
+  </AdminLayout>;
+}
+
+type AdminRepairRow = { id: string; category: string; description: string; cost: string; status: string; paidBy: string; repairDate: string; owner: { id: string; fullName: string; email: string }; unit: string; property: string; propertyId: string; tenant: string | null };
+
+// Platform-wide Repairs list (spec section 17).
+function AdminRepairsPage({ token }: { token: string }) {
+  const [items, setItems] = useState<AdminRepairRow[]>([]);
+  const [total, setTotal] = useState(0);
+  const [skip, setSkip] = useState(0);
+  const take = 25;
+  const [q, setQ] = useState('');
+  const [status, setStatus] = useState('');
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    setLoading(true);
+    const params = new URLSearchParams({ skip: String(skip), take: String(take) });
+    if (q.trim()) params.set('q', q.trim());
+    if (status) params.set('status', status);
+    fetch(`${apiUrl}/admin/repairs?${params.toString()}`, { headers: { Authorization: `Bearer ${token}` } }).then((response) => response.json()).then((body) => { setItems(body.items); setTotal(body.total); }).finally(() => setLoading(false));
+  }, [token, skip, q, status]);
+
+  const columns = [{ key: 'date', header: 'Date' }, { key: 'property', header: 'Property / unit' }, { key: 'owner', header: 'Owner' }, { key: 'category', header: 'Category' }, { key: 'status', header: 'Status' }, { key: 'cost', header: 'Cost', align: 'right' as const }];
+  const rows = items.map((repair) => ({
+    date: new Date(repair.repairDate).toLocaleDateString(),
+    property: <a href={`/admin/properties/${repair.propertyId}`}>{repair.property} / {repair.unit}</a>,
+    owner: <><a href={`/admin/users/${repair.owner.id}`}>{repair.owner.fullName}</a><br /><small>{repair.owner.email}</small></>,
+    category: <>{repair.category}<br /><small>{repair.description}</small></>,
+    status: <span className={`tenant-status ${repair.status.toLowerCase()}`}>{repair.status}</span>,
+    cost: money(repair.cost),
+  }));
+
+  return <AdminLayout active="repairs" token={token} kicker="RMS / ADMINISTRATION" title="Repairs.">
+    <article className="dashboard-card">
+      <div className="admin-toolbar">
+        <input type="search" placeholder="Search by owner, email, tenant, unit, or property" value={q} onChange={(event) => { setQ(event.target.value); setSkip(0); }} aria-label="Search repairs" />
+        <select aria-label="Filter by status" value={status} onChange={(event) => { setStatus(event.target.value); setSkip(0); }}><option value="">All statuses</option><option value="OPEN">Open</option><option value="IN_PROGRESS">In progress</option><option value="COMPLETED">Completed</option><option value="CANCELLED">Cancelled</option></select>
+      </div>
+      <AdminTable columns={columns} rows={rows} total={total} skip={skip} take={take} onPageChange={setSkip} loading={loading} emptyMessage="No repairs match this filter." />
+    </article>
+  </AdminLayout>;
+}
+
+type AdminLog = { id: string; action: string; createdAt: string; actor: { fullName: string } | null };
+
+// Full audit trail (spec section 18): GET /admin/audit-logs with an
+// adjustable page size (the endpoint takes `take` but not `skip` — it's a
+// security trail meant to be scanned newest-first, not paged like a table).
+function AdminAuditLogsPage({ token }: { token: string }) {
+  const [logs, setLogs] = useState<AdminLog[]>([]);
+  const [take, setTake] = useState(200);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => { setLoading(true); fetch(`${apiUrl}/admin/audit-logs?take=${take}`, { headers: { Authorization: `Bearer ${token}` } }).then((response) => response.json()).then(setLogs).finally(() => setLoading(false)); }, [token, take]);
+
+  return <AdminLayout active="audit" token={token} kicker="RMS / ADMINISTRATION" title="Audit logs.">
+    <article className="dashboard-card payments-card">
+      <div className="admin-toolbar"><select aria-label="Number of entries" value={take} onChange={(event) => setTake(Number(event.target.value))}><option value={50}>Last 50</option><option value={200}>Last 200</option><option value={500}>Last 500</option></select></div>
+      {!loading && logs.length === 0 && <p className="empty-state">No activity recorded yet.</p>}
+      {logs.map((log) => <div className="payment-row" key={log.id}><div><strong>{log.action.replace(/_/g, ' ')}</strong><small>{log.actor?.fullName ?? 'Deleted user'} · {new Date(log.createdAt).toLocaleString()}</small></div></div>)}
+    </article>
+  </AdminLayout>;
+}
+
+// System / Danger Zone (spec section 19): the platform-wide "clean
+// database" action, moved off the main admin dashboard and behind its own
+// route + explicit typed confirmation, same as before.
+function AdminSystemPage({ token }: { token: string }) {
+  const [message, setMessage] = useState('');
+  const [cleaning, setCleaning] = useState(false);
+
   async function cleanDatabase() {
     const confirmation = window.prompt('This permanently deletes all properties, units, tenants, leases, bills, payments, repairs, and settlements for every owner. User accounts are kept. Type DELETE ALL DATA to confirm.');
     if (confirmation === null) return;
@@ -1498,7 +2151,6 @@ function Admin({ token }: { token: string }) {
       const body = await response.json();
       if (!response.ok) throw new Error(body.message ?? 'Unable to clean the database.');
       setMessage(`Database cleaned. ${Object.entries(body.deleted as Record<string, number>).map(([key, count]) => `${key}: ${count}`).join(', ')}`);
-      await load();
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'Unable to clean the database.');
     } finally {
@@ -1506,14 +2158,14 @@ function Admin({ token }: { token: string }) {
     }
   }
 
-  const filteredUsers = users.filter((user) => {
-    const matchesStatus = statusFilter === 'ALL' || user.status === statusFilter;
-    const query = search.trim().toLowerCase();
-    const matchesSearch = query === '' || user.fullName.toLowerCase().includes(query) || user.email.toLowerCase().includes(query);
-    return matchesStatus && matchesSearch;
-  });
-
-  return <main className="app-shell"><header className="topbar"><div className="brand"><img className="brand-mark" src="/icon-192.png" alt="RMS" /><span>RMS ADMIN</span></div><AccountMenu /></header><div className="content"><section className="welcome-row"><div><p className="eyebrow">RMS / ADMINISTRATION</p><h1>Control room.</h1><p className="subtle">Platform accounts, portfolio totals, and recent security-sensitive actions.</p></div></section>{message && <p className="error" role="status">{message}</p>}{overview && <section className="metric-grid"><Metric label="Total users" value={String(overview.users.total)} note={`${overview.users.active} active`} accent="green" /><Metric label="Suspended / disabled" value={String(overview.users.suspended + overview.users.disabled)} note={`${overview.users.suspended} suspended · ${overview.users.disabled} disabled`} accent="amber" /><Metric label="Unverified email" value={String(overview.users.unverified)} note="Awaiting activation" accent="rose" /><Metric label="Owners" value={String(overview.portfolio.totalOwners)} note="Accounts with OWNER_ADMIN" accent="blue" /><Metric label="Properties" value={String(overview.portfolio.totalProperties)} note={`${overview.portfolio.totalTenants} active tenants`} accent="green" /><Metric label="Units occupied" value={`${overview.portfolio.occupiedUnits} / ${overview.portfolio.totalUnits}`} note="Across every owner" accent="blue" /><Metric label="This month income" value={money(overview.billing.thisMonthIncome)} note="Platform-wide" accent="green" /><Metric label="Total outstanding" value={money(overview.billing.totalOutstanding)} note="Across open bills" accent="amber" /></section>}<section className="dashboard-grid"><article className="dashboard-card payments-card"><div className="card-heading"><div><p className="card-kicker">Accounts</p><h2>Users</h2></div></div><div className="admin-toolbar"><input type="search" placeholder="Search by name or email" value={search} onChange={(event) => setSearch(event.target.value)} aria-label="Search users" /><select aria-label="Filter by status" value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}><option value="ALL">All statuses</option><option value="ACTIVE">Active</option><option value="SUSPENDED">Suspended</option><option value="DISABLED">Disabled</option></select></div>{filteredUsers.length === 0 && <p className="empty-state">No users match this search.</p>}{filteredUsers.map((user) => <div className="payment-row" key={user.id}><div><strong>{user.fullName}</strong><small>{user.email} · {user.phone}</small><small>{user._count?.properties ?? 0} properties · {user._count?.units ?? 0} units · {user._count?.tenants ?? 0} tenants</small></div><div className="user-row-actions"><span className={`tenant-status ${user.status.toLowerCase()}`}>{user.status}</span>{!user.emailVerifiedAt && <span className="tenant-status unverified-badge">Unverified</span>}{!user.emailVerifiedAt && <button className="quiet-button export-button" disabled={resendingUserId === user.id} onClick={() => resendVerification(user)}>{resendingUserId === user.id ? 'Sending…' : 'Resend link'}</button>}<select aria-label={`Role for ${user.fullName}`} value={user.userRoles?.[0]?.role.id ?? ''} onChange={(event) => updateRole(user, event.target.value)}>{roles.map((role) => <option value={role.id} key={role.id}>{role.name}</option>)}</select><button className="quiet-button export-button" onClick={() => updateStatus(user)}>{user.status === 'ACTIVE' ? 'Suspend' : 'Enable'}</button><button className="danger-button" disabled={deletingUserId === user.id} onClick={() => deleteUser(user)}>{deletingUserId === user.id ? 'Deleting…' : 'Delete'}</button></div></div>)}</article><article className="dashboard-card"><div className="card-heading"><div><p className="card-kicker">Audit</p><h2>Recent events</h2></div></div>{logs.slice(0, 15).map((log) => <div className="payment-row" key={log.id}><div><strong>{log.action.replace(/_/g, ' ')}</strong><small>{log.actor?.fullName ?? 'Deleted user'} · {new Date(log.createdAt).toLocaleString()}</small></div></div>)}</article><article className="dashboard-card danger-card"><div className="card-heading"><div><p className="card-kicker">Danger zone</p><h2>Clean database</h2></div></div><p className="subtle">Permanently deletes properties, units, tenants, leases, bills, payments, repairs, and settlements for every owner. User accounts and roles are kept. This cannot be undone.</p><button className="danger-button" disabled={cleaning} onClick={cleanDatabase}>{cleaning ? 'Cleaning…' : 'Clean database'}</button></article></section></div></main>;
+  return <AdminLayout active="system" token={token} kicker="RMS / ADMINISTRATION" title="System.">
+    {message && <p className="error" role="status">{message}</p>}
+    <article className="dashboard-card danger-card">
+      <div className="card-heading"><div><p className="card-kicker">Danger zone</p><h2>Clean database</h2></div></div>
+      <p className="subtle">Permanently deletes properties, units, tenants, leases, bills, payments, repairs, and settlements for every owner. User accounts and roles are kept. This cannot be undone. For deleting a single property instead, use that property's own Danger Zone on its detail page.</p>
+      <button className="danger-button" disabled={cleaning} onClick={cleanDatabase}>{cleaning ? 'Cleaning…' : 'Clean database'}</button>
+    </article>
+  </AdminLayout>;
 }
 function greetingForHour(hour: number) {
   if (hour < 5) return 'Good night';
@@ -1531,13 +2183,19 @@ function Dashboard({ summary, firstName, onSignOut }: { summary: Summary; firstN
   const dateLabel = now.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' });
   const timeLabel = formatClockTime(now);
   const greeting = greetingForHour(now.getHours());
-  const max = Math.max(...summary.monthlyIncomeTrend.map((item) => Number(item.income)), 1); const occupancy = summary.totalUnits ? summary.occupiedUnits / summary.totalUnits * 100 : 0;
+  const max = Math.max(...summary.monthlyIncomeTrend.flatMap((item) => [Number(item.income), Number(item.repair)]), 1); const occupancy = summary.totalUnits ? summary.occupiedUnits / summary.totalUnits * 100 : 0;
   const netProfit = Math.max(0, Number(summary.thisMonthNetProfit));
   const repairCost = Math.max(0, Number(summary.thisMonthOwnerRepairCost));
-  const PAYMENT_METHOD_COLORS: Record<string, string> = { CASH: '#5e8b6e', BANK_TRANSFER: '#7b9cb0', CARD: '#d4a25d', OTHER: '#bd7c75' };
-  const paymentMethodTotals = summary.recentPayments.reduce((totals, payment) => { totals[payment.method] = (totals[payment.method] ?? 0) + Number(payment.amount); return totals; }, {} as Record<string, number>);
-  const paymentMethodSegments = Object.entries(paymentMethodTotals).map(([method, total]) => ({ label: method.replace('_', ' '), value: total, color: PAYMENT_METHOD_COLORS[method] ?? '#8a978f' }));
-  return <main className="app-shell"><header className="topbar"><div className="brand"><img className="brand-mark" src="/icon-192.png" alt="RMS" /><span>RMS</span></div><TopNav active="dashboard" /><AccountMenu onSignOut={onSignOut} /></header><div className="content" id="dashboard"><section className="welcome-row"><div><p className="eyebrow">{dateLabel} · {timeLabel}</p><h1>{greeting}, {firstName || 'there'}.</h1><p className="subtle">Here is the pulse of your portfolio this month.</p></div></section><section className="metric-grid"><Metric label="This month income" value={money(summary.thisMonthIncome)} note="Net house rent" accent="green" /><Metric label="Total outstanding" value={money(summary.totalOutstanding)} note="Across all open bills" accent="amber" /><Metric label="This month due" value={money(summary.thisMonthDue)} note="Current billing month" accent="blue" /><Metric label="Net profit" value={money(summary.thisMonthNetProfit)} note="After owner repairs" accent="rose" /></section><section className="dashboard-grid"><article className="dashboard-card trend-card"><div className="card-heading"><div><p className="card-kicker">Cash flow</p><h2>Income trend</h2></div><span className="range-label">Last 6 months</span></div><div className="bars">{summary.monthlyIncomeTrend.map((item) => <div className="bar-group" key={item.month}><div className="bar-track"><div className="bar" style={{ height: `${Math.max(5, Number(item.income) / max * 100)}%` }} /></div><span>{item.month.slice(5)}</span></div>)}</div></article><article className="dashboard-card occupancy-card"><div className="card-heading"><div><p className="card-kicker">Occupancy</p><h2>Units at a glance</h2></div><span className="occupancy-rate">{Math.round(occupancy)}%</span></div><PieChart segments={[{ label: 'Occupied', value: summary.occupiedUnits, color: '#5e8b6e' }, { label: 'Available', value: summary.availableUnits, color: '#c1d0c4' }]} centerLabel={String(summary.occupiedUnits)} centerNote={`of ${summary.totalUnits} units`} /></article><article className="dashboard-card"><div className="card-heading"><div><p className="card-kicker">This month</p><h2>Income split</h2></div></div><PieChart segments={[{ label: 'Net profit', value: netProfit, color: '#5e8b6e' }, { label: 'Owner repairs', value: repairCost, color: '#bd7c75' }]} centerLabel={money(summary.thisMonthIncome)} centerNote="collected" /></article><article className="dashboard-card"><div className="card-heading"><div><p className="card-kicker">Recent activity</p><h2>Payment methods</h2></div></div>{paymentMethodSegments.length ? <PieChart segments={paymentMethodSegments} centerLabel={String(summary.recentPayments.length)} centerNote="payments" /> : <p className="empty-state">No payments recorded yet.</p>}</article><article className="dashboard-card payments-card" id="payments"><div className="card-heading"><div><p className="card-kicker">Recent activity</p><h2>Latest payments</h2></div><a href="#payments">View all</a></div>{summary.recentPayments.length ? summary.recentPayments.slice(0, 5).map((payment) => <div className="payment-row" key={payment.id}><span className="payment-icon">↗</span><div><strong>{payment.method.replace('_', ' ')}</strong><small>{new Date(payment.paidOn).toLocaleDateString()}</small></div><b>{money(payment.amount)}</b></div>) : <p className="empty-state">No payments recorded yet.</p>}</article></section></div></main>;
+  const monthLabel = (ym: string) => new Date(`${ym}-02T00:00:00Z`).toLocaleDateString(undefined, { month: 'short', year: '2-digit', timeZone: 'UTC' });
+  const UTILITY_COLORS: Record<string, string> = { Electricity: '#d4a25d', Water: '#7b9cb0', Gas: '#e0996b', Other: '#8a978f' };
+  const utilitySegments = summary.thisMonthUtilityBreakdown ? [
+    { label: 'Electricity', value: Number(summary.thisMonthUtilityBreakdown.electricity), color: UTILITY_COLORS.Electricity },
+    { label: 'Water', value: Number(summary.thisMonthUtilityBreakdown.water), color: UTILITY_COLORS.Water },
+    { label: 'Gas', value: Number(summary.thisMonthUtilityBreakdown.gas), color: UTILITY_COLORS.Gas },
+    { label: 'Other', value: Number(summary.thisMonthUtilityBreakdown.other), color: UTILITY_COLORS.Other },
+  ] : [];
+  const utilityTotal = utilitySegments.reduce((sum, segment) => sum + Math.max(0, segment.value), 0);
+  return <main className="app-shell"><header className="topbar"><div className="brand"><img className="brand-mark" src="/icon-192.png" alt="RMS" /><span>RMS</span></div><TopNav active="dashboard" /><AccountMenu onSignOut={onSignOut} /></header><div className="content" id="dashboard"><section className="welcome-row"><div><p className="eyebrow">{dateLabel} · {timeLabel}</p><h1>{greeting}, {firstName || 'there'}.</h1><p className="subtle">Here is the pulse of your portfolio this month.</p></div></section><section className="metric-grid"><Metric label="This month income" value={money(summary.thisMonthIncome)} note="Net house rent" accent="green" /><Metric label="Total outstanding" value={money(summary.totalOutstanding)} note="Across all open bills" accent="amber" /><Metric label="This month due" value={money(summary.thisMonthDue)} note="Current billing month" accent="blue" /><Metric label="Net profit" value={money(summary.thisMonthNetProfit)} note="After owner repairs" accent="rose" /></section><section className="dashboard-grid"><article className="dashboard-card trend-card"><div className="card-heading"><div><p className="card-kicker">Cash flow</p><h2>Income trend</h2></div><span className="range-label">Last 6 months</span></div><div className="chart-legend"><span className="legend-chip"><i className="legend-dot" style={{ background: '#5e8b6e' }} />Income</span><span className="legend-chip"><i className="legend-dot" style={{ background: '#bd7c75' }} />Repairs</span></div><div className="bars">{summary.monthlyIncomeTrend.map((item) => <div className="bar-group" key={item.month}><div className="bar-track"><div className="bar" style={{ height: `${Math.max(5, Number(item.income) / max * 100)}%` }} title={`Income: ${money(item.income)}`} /><div className="bar bar-repair" style={{ height: `${Number(item.repair) > 0 ? Math.max(5, Number(item.repair) / max * 100) : 0}%` }} title={`Repairs: ${money(item.repair)}`} /></div><span>{monthLabel(item.month)}</span></div>)}</div></article><article className="dashboard-card occupancy-card"><div className="card-heading"><div><p className="card-kicker">Occupancy</p><h2>Units at a glance</h2></div><span className="occupancy-rate">{Math.round(occupancy)}%</span></div><PieChart segments={[{ label: 'Occupied', value: summary.occupiedUnits, color: '#5e8b6e' }, { label: 'Available', value: summary.availableUnits, color: '#c1d0c4' }]} centerLabel={String(summary.occupiedUnits)} centerNote={`of ${summary.totalUnits} units`} /></article><article className="dashboard-card"><div className="card-heading"><div><p className="card-kicker">This month</p><h2>Income split</h2></div></div><PieChart segments={[{ label: 'Net profit', value: netProfit, color: '#5e8b6e' }, { label: 'Owner repairs', value: repairCost, color: '#bd7c75' }]} centerLabel={money(summary.thisMonthIncome)} centerNote="collected" /></article><article className="dashboard-card"><div className="card-heading"><div><p className="card-kicker">This month</p><h2>Utility bills</h2></div></div>{utilityTotal > 0 ? <PieChart segments={utilitySegments} centerLabel={money(String(utilityTotal))} centerNote="billed" /> : <p className="empty-state">No utility bills recorded yet.</p>}</article><article className="dashboard-card payments-card" id="payments"><div className="card-heading"><div><p className="card-kicker">Recent activity</p><h2>Latest payments</h2></div><a href="#payments">View all</a></div>{summary.recentPayments.length ? summary.recentPayments.slice(0, 5).map((payment) => <div className="payment-row" key={payment.id}><span className="payment-icon">↗</span><div><strong>{payment.tenantName}</strong><small>Unit {payment.unitNo} · {new Date(payment.paidOn).toLocaleDateString()}</small></div><b>{money(payment.amount)}</b></div>) : <p className="empty-state">No payments recorded yet.</p>}</article></section></div></main>;
 }
 
 function Metric({

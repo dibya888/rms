@@ -168,6 +168,18 @@ export class AuthService {
     });
   }
 
+  // Role names for the current session. Looked up from the DB rather than
+  // trusted from the JWT payload (the access token only carries sub/email/
+  // firstName — no roles), so this stays correct even if a role changes
+  // mid-session. Used by GET /auth/me so the frontend can route a
+  // SYSTEM_ADMIN-only account (no OWNER_ADMIN role) straight to the admin
+  // control center instead of trying to load an owner dashboard it has no
+  // data for.
+  async getRoles(userId: string): Promise<string[]> {
+    const userRoles = await this.prisma.userRole.findMany({ where: { userId }, select: { role: { select: { name: true } } } });
+    return userRoles.map((userRole) => userRole.role.name);
+  }
+
   async updateProfile(userId: string, dto: UpdateProfileDto) {
     const data: Prisma.UserUpdateInput = {};
     if (dto.fullName !== undefined) data.fullName = dto.fullName.trim();

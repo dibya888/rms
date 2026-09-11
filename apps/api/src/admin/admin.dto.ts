@@ -38,3 +38,14 @@ export class DeleteUserDto {
   @IsEmail()
   confirmation!: string;
 }
+
+export class DeletePropertyDto {
+  // Requires the admin to type the exact property name being deleted, so
+  // this irreversible action can't be fired by an accidental click and the
+  // admin has to actually look at which property they're removing. Checked
+  // against the property's actual name in the controller (case-sensitive,
+  // trimmed), since the expected value is dynamic per-property.
+  @IsString()
+  @MinLength(1)
+  confirmation!: string;
+}
