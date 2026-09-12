@@ -1,4 +1,4 @@
-import { Equals, IsEmail, IsEnum, IsOptional, IsString, IsUUID, MinLength } from 'class-validator';
+import { ArrayMinSize, ArrayUnique, Equals, IsArray, IsEmail, IsEnum, IsOptional, IsString, IsUUID, MinLength } from 'class-validator';
 import { UserStatus } from '@prisma/client';
 
 const CLEAN_DATABASE_CONFIRMATION = 'DELETE ALL DATA';
@@ -45,6 +45,22 @@ export class DeletePropertyDto {
   // admin has to actually look at which property they're removing. Checked
   // against the property's actual name in the controller (case-sensitive,
   // trimmed), since the expected value is dynamic per-property.
+  @IsString()
+  @MinLength(1)
+  confirmation!: string;
+}
+
+export class BulkDeletePropertiesDto {
+  @IsArray()
+  @ArrayMinSize(1)
+  @ArrayUnique()
+  @IsUUID(undefined, { each: true })
+  propertyIds!: string[];
+
+  // Checked in the controller against "DELETE <n> PROPERTIES" (n = the
+  // number of ids submitted), so the admin has to type a count that matches
+  // what they actually selected — a single fixed phrase can't be pasted in
+  // without looking at how many rows are checked.
   @IsString()
   @MinLength(1)
   confirmation!: string;

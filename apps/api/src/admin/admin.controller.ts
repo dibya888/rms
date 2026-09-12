@@ -1,7 +1,7 @@
 import { Body, ConflictException, Controller, Get, Inject, NotFoundException, Param, Patch, Post, Req, UseGuards } from '@nestjs/common';
 import type { Request } from 'express';
 import { Prisma } from '@prisma/client';
-import { CleanDatabaseDto, DeletePropertyDto, DeleteUserDto, UpdateUserRoleDto, UpdateUserStatusDto } from './admin.dto';
+import { BulkDeletePropertiesDto, CleanDatabaseDto, DeletePropertyDto, DeleteUserDto, UpdateUserRoleDto, UpdateUserStatusDto } from './admin.dto';
 import { AccessTokenGuard } from '../auth/access-token.guard';
 import { Roles } from '../auth/roles.decorator';
 import { RolesGuard } from '../auth/roles.guard';
@@ -9,6 +9,7 @@ import { PrismaService } from '../prisma.service';
 
 const UNRESOLVED_BILL_STATUSES: Array<'DUE' | 'PARTIAL' | 'LATE'> = ['DUE', 'PARTIAL', 'LATE'];
 const OPEN_REPAIR_STATUSES: Array<'OPEN' | 'IN_PROGRESS'> = ['OPEN', 'IN_PROGRESS'];
+type PropertyDeleteCounts = { units: number; tenants: number; leases: number; rentBills: number; payments: number; repairs: number; settlements: number };
 
 type PagingQuery = { skip?: string; take?: string };
 
@@ -322,23 +323,62 @@ export class AdminController {
       if (!property) throw new NotFoundException('property not found');
       if (dto.confirmation.trim() !== property.name) throw new ConflictException('confirmation must match the property name exactly');
 
-      const unitIds = property.units.map((unit) => unit.id);
-      const whereUnit = { unitId: { in: unitIds } };
-
-      const payments = await transaction.payment.deleteMany({ where: { bill: whereUnit } });
-      const rentBills = await transaction.rentBill.deleteMany({ where: whereUnit });
-      const settlements = await transaction.moveOutSettlement.deleteMany({ where: whereUnit });
-      const repairs = await transaction.repair.deleteMany({ where: whereUnit });
-      const leases = await transaction.leaseAgreement.deleteMany({ where: whereUnit });
-      const tenants = await transaction.tenant.deleteMany({ where: whereUnit });
-      const units = await transaction.unit.deleteMany({ where: { propertyId } });
-      await transaction.property.delete({ where: { id: propertyId } });
-
-      const deletedData = { units: units.count, tenants: tenants.count, leases: leases.count, rentBills: rentBills.count, payments: payments.count, repairs: repairs.count, settlements: settlements.count };
+      const deletedData = await this.deletePropertyRecords(transaction, property);
       await transaction.auditLog.create({ data: { ownerId: property.ownerId, actorUserId: request.user!.sub, action: 'PROPERTY_DELETED', details: { propertyId, name: property.name, deletedData } } });
 
       return { status: 'deleted' as const, propertyId, deletedData };
     });
+  }
+
+  // Same permanent delete as deleteProperty, applied to several properties
+  // checked in the admin Properties table at once. The confirmation phrase
+  // must be "DELETE <n> PROPERTIES" where n is exactly the number of ids
+  // submitted — typing a fixed word doesn't work, the admin has to type a
+  // number that matches what's actually selected. Every property is
+  // deleted inside the same transaction: if any one of them fails (not
+  // found, already gone), the whole batch rolls back and nothing is
+  // deleted, rather than leaving some properties gone and others not.
+  @Post('properties/bulk-delete')
+  bulkDeleteProperties(@Body() dto: BulkDeletePropertiesDto, @Req() request: Request & { user?: { sub: string } }) {
+    const expectedPhrase = `DELETE ${dto.propertyIds.length} PROPERTIES`;
+    if (dto.confirmation.trim().toUpperCase() !== expectedPhrase) throw new ConflictException(`confirmation must exactly equal "${expectedPhrase}"`);
+
+    return this.prisma.withSystemAdmin(async (transaction) => {
+      const results: Array<{ propertyId: string; name: string; deletedData: PropertyDeleteCounts }> = [];
+
+      for (const propertyId of dto.propertyIds) {
+        const property = await transaction.property.findFirst({ where: { id: propertyId, deletedAt: null }, include: { units: { select: { id: true } } } });
+        if (!property) throw new NotFoundException(`property ${propertyId} not found`);
+        const deletedData = await this.deletePropertyRecords(transaction, property);
+        results.push({ propertyId, name: property.name, deletedData });
+      }
+
+      await transaction.auditLog.create({ data: { ownerId: null, actorUserId: request.user!.sub, action: 'PROPERTY_DELETED', details: { bulk: true, count: results.length, properties: results } } });
+
+      return { status: 'deleted' as const, count: results.length, properties: results };
+    });
+  }
+
+  // Shared by deleteProperty and bulkDeleteProperties: deletes every record
+  // scoped to a property's units — payments, rent bills, settlements,
+  // repairs, leases, tenants — then the units and the property itself, in
+  // FK-safe child-before-parent order. Caller is responsible for the
+  // existence check and the confirmation check; this only ever runs once
+  // both have already passed.
+  private async deletePropertyRecords(transaction: Prisma.TransactionClient, property: { id: string; units: Array<{ id: string }> }): Promise<PropertyDeleteCounts> {
+    const unitIds = property.units.map((unit) => unit.id);
+    const whereUnit = { unitId: { in: unitIds } };
+
+    const payments = await transaction.payment.deleteMany({ where: { bill: whereUnit } });
+    const rentBills = await transaction.rentBill.deleteMany({ where: whereUnit });
+    const settlements = await transaction.moveOutSettlement.deleteMany({ where: whereUnit });
+    const repairs = await transaction.repair.deleteMany({ where: whereUnit });
+    const leases = await transaction.leaseAgreement.deleteMany({ where: whereUnit });
+    const tenants = await transaction.tenant.deleteMany({ where: whereUnit });
+    const units = await transaction.unit.deleteMany({ where: { propertyId: property.id } });
+    await transaction.property.delete({ where: { id: property.id } });
+
+    return { units: units.count, tenants: tenants.count, leases: leases.count, rentBills: rentBills.count, payments: payments.count, repairs: repairs.count, settlements: settlements.count };
   }
 
   // Platform-wide tenant list: owner, property/unit, most recent lease

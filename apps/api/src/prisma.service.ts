@@ -14,7 +14,7 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
     return this.$transaction(async (transaction) => {
       await transaction.$executeRaw`SELECT set_config('app.is_system_admin', 'true', true)`;
       return callback(transaction);
-    });
+    }, { timeout: 30_000 });
   }
 
   async onModuleInit() {

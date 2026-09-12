@@ -158,7 +158,7 @@ function AccountMenu({ onSignOut, variant = 'owner' }: { onSignOut?: () => void;
     }
   }
   return <div className="account-menu" onClick={(event) => event.stopPropagation()}>
-    <button type="button" className="account-menu-trigger" aria-label="Account menu" aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen((value) => !value)}>⋮</button>
+    <button type="button" className="account-menu-trigger" aria-label="Account menu" aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen((value) => !value)}>☰</button>
     {open && <div className="account-menu-panel" role="menu">
       {variant === 'owner' && <a className="account-menu-item" href="/profile" role="menuitem">Profile</a>}
       {variant === 'owner' && <a className="account-menu-item" href="/settings" role="menuitem">Settings</a>}
@@ -1525,14 +1525,34 @@ function AdminSearch({ token }: { token: string }) {
 // row cells in, a scrollable table and Previous/Next pagination out. Every
 // admin list endpoint returns { items, total } for a fixed page size, so
 // paging is just tracking `skip` in the parent and calling onPageChange.
-function AdminTable({ columns, rows, total, skip, take, onPageChange, loading, emptyMessage }: { columns: Array<{ key: string; header: string; align?: 'left' | 'right' }>; rows: Array<Record<string, ReactNode>>; total: number; skip: number; take: number; onPageChange: (skip: number) => void; loading?: boolean; emptyMessage?: string }) {
+function AdminTable({ columns, rows, rowIds, selectedIds, onSelectionChange, total, skip, take, onPageChange, loading, emptyMessage }: { columns: Array<{ key: string; header: string; align?: 'left' | 'right' }>; rows: Array<Record<string, ReactNode>>; rowIds?: string[]; selectedIds?: string[]; onSelectionChange?: (ids: string[]) => void; total: number; skip: number; take: number; onPageChange: (skip: number) => void; loading?: boolean; emptyMessage?: string }) {
+  const selectable = Boolean(rowIds && onSelectionChange);
+  const pageIds = rowIds ?? [];
+  const selectedSet = new Set(selectedIds ?? []);
+  const allOnPageSelected = pageIds.length > 0 && pageIds.every((id) => selectedSet.has(id));
+
+  function toggleAll() {
+    if (!onSelectionChange) return;
+    onSelectionChange(allOnPageSelected ? (selectedIds ?? []).filter((id) => !pageIds.includes(id)) : Array.from(new Set([...(selectedIds ?? []), ...pageIds])));
+  }
+  function toggleRow(id: string) {
+    if (!onSelectionChange) return;
+    onSelectionChange(selectedSet.has(id) ? (selectedIds ?? []).filter((rowId) => rowId !== id) : [...(selectedIds ?? []), id]);
+  }
+
   return <>
     <div className="admin-table-wrap">
       <table className="admin-table">
-        <thead><tr>{columns.map((column) => <th key={column.key} style={column.align === 'right' ? { textAlign: 'right' } : undefined}>{column.header}</th>)}</tr></thead>
+        <thead><tr>
+          {selectable && <th className="admin-table-checkbox-cell"><input type="checkbox" aria-label="Select all rows on this page" checked={allOnPageSelected} onChange={toggleAll} /></th>}
+          {columns.map((column) => <th key={column.key} style={column.align === 'right' ? { textAlign: 'right' } : undefined}>{column.header}</th>)}
+        </tr></thead>
         <tbody>
-          {rows.length === 0 && <tr><td colSpan={columns.length} className="empty-state">{loading ? 'Loading…' : (emptyMessage ?? 'No records found.')}</td></tr>}
-          {rows.map((row, index) => <tr key={index}>{columns.map((column) => <td key={column.key} style={column.align === 'right' ? { textAlign: 'right' } : undefined}>{row[column.key]}</td>)}</tr>)}
+          {rows.length === 0 && <tr><td colSpan={columns.length + (selectable ? 1 : 0)} className="empty-state">{loading ? 'Loading…' : (emptyMessage ?? 'No records found.')}</td></tr>}
+          {rows.map((row, index) => <tr key={index}>
+            {selectable && <td className="admin-table-checkbox-cell"><input type="checkbox" aria-label="Select row" checked={pageIds[index] ? selectedSet.has(pageIds[index]) : false} onChange={() => pageIds[index] && toggleRow(pageIds[index])} /></td>}
+            {columns.map((column) => <td key={column.key} style={column.align === 'right' ? { textAlign: 'right' } : undefined}>{row[column.key]}</td>)}
+          </tr>)}
         </tbody>
       </table>
     </div>
@@ -1784,29 +1804,70 @@ function AdminPropertiesPage({ token }: { token: string }) {
   const take = 25;
   const [q, setQ] = useState(() => new URLSearchParams(window.location.search).get('q') ?? '');
   const [loading, setLoading] = useState(true);
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [showBulkDelete, setShowBulkDelete] = useState(false);
+  const [bulkConfirmText, setBulkConfirmText] = useState('');
+  const [bulkDeleting, setBulkDeleting] = useState(false);
+  const [bulkError, setBulkError] = useState('');
 
-  useEffect(() => {
+  const load = () => {
     setLoading(true);
-    fetch(`${apiUrl}/admin/properties?skip=${skip}&take=${take}&q=${encodeURIComponent(q)}`, { headers: { Authorization: `Bearer ${token}` } })
+    return fetch(`${apiUrl}/admin/properties?skip=${skip}&take=${take}&q=${encodeURIComponent(q)}`, { headers: { Authorization: `Bearer ${token}` } })
       .then((response) => response.json())
       .then((body) => { setItems(body.items); setTotal(body.total); })
       .finally(() => setLoading(false));
-  }, [token, skip, q]);
+  };
 
-  const columns = [{ key: 'name', header: 'Property' }, { key: 'owner', header: 'Owner' }, { key: 'units', header: 'Units', align: 'right' as const }, { key: 'occupancy', header: 'Occupied / vacant', align: 'right' as const }, { key: 'created', header: 'Created' }];
+  useEffect(() => { void load(); }, [token, skip, q]);
+
+  const columns = [{ key: 'name', header: 'Property' }, { key: 'owner', header: 'Owner' }, { key: 'units', header: 'Units', align: 'right' as const }, { key: 'occupancy', header: 'Occupied / vacant', align: 'right' as const }, { key: 'created', header: 'Created' }, { key: 'actions', header: 'Actions', align: 'right' as const }];
   const rows = items.map((property) => ({
     name: <a href={`/admin/properties/${property.id}`}><strong>{property.name}</strong></a>,
     owner: <><a href={`/admin/users/${property.owner.id}`}>{property.owner.fullName}</a><br /><small>{property.owner.email}</small></>,
     units: property.unitCount,
     occupancy: `${property.occupiedUnits} / ${property.vacantUnits}`,
     created: new Date(property.createdAt).toLocaleDateString(),
+    actions: <a className="quiet-button export-button" href={`/admin/properties/${property.id}`}>View</a>,
   }));
+
+  const expectedBulkPhrase = `DELETE ${selectedIds.length} PROPERTIES`;
+
+  async function confirmBulkDelete() {
+    setBulkDeleting(true); setBulkError('');
+    try {
+      const csrfResponse = await fetch(`${apiUrl}/auth/csrf`, { credentials: 'include' });
+      const { csrfToken } = await csrfResponse.json();
+      const response = await fetch(`${apiUrl}/admin/properties/bulk-delete`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}`, 'X-CSRF-Token': csrfToken }, credentials: 'include', body: JSON.stringify({ propertyIds: selectedIds, confirmation: bulkConfirmText }) });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.message ?? 'Unable to delete these properties.');
+      setShowBulkDelete(false); setSelectedIds([]); setBulkConfirmText('');
+      await load();
+    } catch (reason) {
+      setBulkError(reason instanceof Error ? reason.message : 'Unable to delete these properties.');
+    } finally {
+      setBulkDeleting(false);
+    }
+  }
 
   return <AdminLayout active="properties" token={token} kicker="RMS / ADMINISTRATION" title="Properties.">
     <article className="dashboard-card">
       <div className="admin-toolbar"><input type="search" placeholder="Search by name, address, or owner" value={q} onChange={(event) => { setQ(event.target.value); setSkip(0); }} aria-label="Search properties" /></div>
-      <AdminTable columns={columns} rows={rows} total={total} skip={skip} take={take} onPageChange={setSkip} loading={loading} emptyMessage="No properties match this search." />
+      {selectedIds.length > 0 && <div className="admin-bulk-bar"><span>{selectedIds.length} selected</span><button type="button" className="danger-button" onClick={() => { setShowBulkDelete(true); setBulkConfirmText(''); setBulkError(''); }}>Delete selected</button></div>}
+      <AdminTable columns={columns} rows={rows} rowIds={items.map((property) => property.id)} selectedIds={selectedIds} onSelectionChange={setSelectedIds} total={total} skip={skip} take={take} onPageChange={setSkip} loading={loading} emptyMessage="No properties match this search." />
     </article>
+
+    {showBulkDelete && <div className="modal-overlay" onClick={() => !bulkDeleting && setShowBulkDelete(false)}>
+      <div className="modal-panel" onClick={(event) => event.stopPropagation()}>
+        <h2>Delete {selectedIds.length} properties?</h2>
+        <p className="subtle">This permanently deletes each selected property and everything scoped to its units — tenants, leases, rent bills, payments, repairs, and settlements. This cannot be undone.</p>
+        <label>Type <code>{expectedBulkPhrase}</code> to confirm<input value={bulkConfirmText} onChange={(event) => setBulkConfirmText(event.target.value)} placeholder={expectedBulkPhrase} autoFocus /></label>
+        {bulkError && <p className="error">{bulkError}</p>}
+        <div className="report-actions">
+          <button type="button" className="quiet-button" disabled={bulkDeleting} onClick={() => setShowBulkDelete(false)}>Cancel</button>
+          <button type="button" className="danger-button" disabled={bulkDeleting || bulkConfirmText.trim().toUpperCase() !== expectedBulkPhrase} onClick={confirmBulkDelete}>{bulkDeleting ? 'Deleting…' : 'Delete permanently'}</button>
+        </div>
+      </div>
+    </div>}
   </AdminLayout>;
 }
 
@@ -1932,7 +1993,7 @@ function AdminUnitsPage({ token }: { token: string }) {
 
   useEffect(() => { setLoading(true); fetch(`${apiUrl}/admin/units?skip=${skip}&take=${take}&q=${encodeURIComponent(q)}`, { headers: { Authorization: `Bearer ${token}` } }).then((response) => response.json()).then((body) => { setItems(body.items); setTotal(body.total); }).finally(() => setLoading(false)); }, [token, skip, q]);
 
-  const columns = [{ key: 'unit', header: 'Unit' }, { key: 'property', header: 'Property' }, { key: 'owner', header: 'Owner' }, { key: 'tenant', header: 'Tenant' }, { key: 'rent', header: 'Rent', align: 'right' as const }, { key: 'status', header: 'Status' }];
+  const columns = [{ key: 'unit', header: 'Unit' }, { key: 'property', header: 'Property' }, { key: 'owner', header: 'Owner' }, { key: 'tenant', header: 'Tenant' }, { key: 'rent', header: 'Rent', align: 'right' as const }, { key: 'status', header: 'Status' }, { key: 'actions', header: 'Actions', align: 'right' as const }];
   const rows = items.map((unit) => ({
     unit: unit.unitNo,
     property: <a href={`/admin/properties/${unit.property.id}`}>{unit.property.name}</a>,
@@ -1940,6 +2001,7 @@ function AdminUnitsPage({ token }: { token: string }) {
     tenant: unit.currentTenant?.name ?? '—',
     rent: money(unit.rent),
     status: <span className={`tenant-status ${unit.status.toLowerCase()}`}>{unit.status}</span>,
+    actions: <a className="quiet-button export-button" href={`/admin/properties/${unit.property.id}`}>View property</a>,
   }));
 
   return <AdminLayout active="units" token={token} kicker="RMS / ADMINISTRATION" title="Units.">
@@ -1963,7 +2025,7 @@ function AdminTenantsPage({ token }: { token: string }) {
 
   useEffect(() => { setLoading(true); fetch(`${apiUrl}/admin/tenants?skip=${skip}&take=${take}&q=${encodeURIComponent(q)}`, { headers: { Authorization: `Bearer ${token}` } }).then((response) => response.json()).then((body) => { setItems(body.items); setTotal(body.total); }).finally(() => setLoading(false)); }, [token, skip, q]);
 
-  const columns = [{ key: 'name', header: 'Tenant' }, { key: 'property', header: 'Property / unit' }, { key: 'owner', header: 'Owner' }, { key: 'lease', header: 'Lease' }, { key: 'rent', header: 'Rent', align: 'right' as const }, { key: 'outstanding', header: 'Outstanding', align: 'right' as const }];
+  const columns = [{ key: 'name', header: 'Tenant' }, { key: 'property', header: 'Property / unit' }, { key: 'owner', header: 'Owner' }, { key: 'lease', header: 'Lease' }, { key: 'rent', header: 'Rent', align: 'right' as const }, { key: 'outstanding', header: 'Outstanding', align: 'right' as const }, { key: 'actions', header: 'Actions', align: 'right' as const }];
   const rows = items.map((tenant) => ({
     name: <><strong>{tenant.name}</strong><br /><small>{tenant.phone}</small></>,
     property: tenant.property ? <a href={`/admin/properties/${tenant.property.id}`}>{tenant.property.name}{tenant.unit ? ` / ${tenant.unit.unitNo}` : ''}</a> : '—',
@@ -1971,6 +2033,7 @@ function AdminTenantsPage({ token }: { token: string }) {
     lease: tenant.leaseStatus ? <span className={`tenant-status ${tenant.leaseStatus.toLowerCase()}`}>{tenant.leaseStatus}</span> : '—',
     rent: tenant.rent ? money(tenant.rent) : '—',
     outstanding: Number(tenant.outstanding) > 0 ? money(tenant.outstanding) : '—',
+    actions: tenant.property ? <a className="quiet-button export-button" href={`/admin/properties/${tenant.property.id}`}>View property</a> : '—',
   }));
 
   return <AdminLayout active="tenants" token={token} kicker="RMS / ADMINISTRATION" title="Tenants.">
@@ -2006,7 +2069,7 @@ function AdminPaymentsPage({ token }: { token: string }) {
     fetch(`${apiUrl}/admin/payments?${params.toString()}`, { headers: { Authorization: `Bearer ${token}` } }).then((response) => response.json()).then((body) => { setItems(body.items); setTotal(body.total); }).finally(() => setLoading(false));
   }, [token, skip, q, method, from, to]);
 
-  const columns = [{ key: 'date', header: 'Date' }, { key: 'tenant', header: 'Tenant' }, { key: 'property', header: 'Property / unit' }, { key: 'owner', header: 'Owner' }, { key: 'method', header: 'Method' }, { key: 'amount', header: 'Amount', align: 'right' as const }];
+  const columns = [{ key: 'date', header: 'Date' }, { key: 'tenant', header: 'Tenant' }, { key: 'property', header: 'Property / unit' }, { key: 'owner', header: 'Owner' }, { key: 'method', header: 'Method' }, { key: 'amount', header: 'Amount', align: 'right' as const }, { key: 'actions', header: 'Actions', align: 'right' as const }];
   const rows = items.map((payment) => ({
     date: new Date(payment.paidOn).toLocaleDateString(),
     tenant: payment.tenantName,
@@ -2014,6 +2077,7 @@ function AdminPaymentsPage({ token }: { token: string }) {
     owner: <><a href={`/admin/users/${payment.owner.id}`}>{payment.owner.fullName}</a><br /><small>{payment.owner.email}</small></>,
     method: payment.method.replace('_', ' '),
     amount: money(payment.amount),
+    actions: <a className="quiet-button export-button" href={`/admin/properties/${payment.propertyId}`}>View property</a>,
   }));
 
   return <AdminLayout active="payments" token={token} kicker="RMS / ADMINISTRATION" title="Payments.">
@@ -2049,7 +2113,7 @@ function AdminRentBillsPage({ token }: { token: string }) {
     fetch(`${apiUrl}/admin/rent-bills?${params.toString()}`, { headers: { Authorization: `Bearer ${token}` } }).then((response) => response.json()).then((body) => { setItems(body.items); setTotal(body.total); }).finally(() => setLoading(false));
   }, [token, skip, q, status]);
 
-  const columns = [{ key: 'month', header: 'Bill month' }, { key: 'due', header: 'Due date' }, { key: 'tenant', header: 'Tenant' }, { key: 'property', header: 'Property / unit' }, { key: 'owner', header: 'Owner' }, { key: 'status', header: 'Status' }, { key: 'total', header: 'Total', align: 'right' as const }];
+  const columns = [{ key: 'month', header: 'Bill month' }, { key: 'due', header: 'Due date' }, { key: 'tenant', header: 'Tenant' }, { key: 'property', header: 'Property / unit' }, { key: 'owner', header: 'Owner' }, { key: 'status', header: 'Status' }, { key: 'total', header: 'Total', align: 'right' as const }, { key: 'actions', header: 'Actions', align: 'right' as const }];
   const rows = items.map((bill) => ({
     month: new Date(bill.billMonth).toLocaleDateString(undefined, { month: 'short', year: 'numeric' }),
     due: new Date(bill.dueDate).toLocaleDateString(),
@@ -2058,6 +2122,7 @@ function AdminRentBillsPage({ token }: { token: string }) {
     owner: <><a href={`/admin/users/${bill.owner.id}`}>{bill.owner.fullName}</a><br /><small>{bill.owner.email}</small></>,
     status: <span className={`tenant-status ${bill.status.toLowerCase()}`}>{bill.status}</span>,
     total: money(bill.total),
+    actions: <a className="quiet-button export-button" href={`/admin/properties/${bill.propertyId}`}>View property</a>,
   }));
 
   return <AdminLayout active="bills" token={token} kicker="RMS / ADMINISTRATION" title="Rent bills.">
@@ -2091,7 +2156,7 @@ function AdminRepairsPage({ token }: { token: string }) {
     fetch(`${apiUrl}/admin/repairs?${params.toString()}`, { headers: { Authorization: `Bearer ${token}` } }).then((response) => response.json()).then((body) => { setItems(body.items); setTotal(body.total); }).finally(() => setLoading(false));
   }, [token, skip, q, status]);
 
-  const columns = [{ key: 'date', header: 'Date' }, { key: 'property', header: 'Property / unit' }, { key: 'owner', header: 'Owner' }, { key: 'category', header: 'Category' }, { key: 'status', header: 'Status' }, { key: 'cost', header: 'Cost', align: 'right' as const }];
+  const columns = [{ key: 'date', header: 'Date' }, { key: 'property', header: 'Property / unit' }, { key: 'owner', header: 'Owner' }, { key: 'category', header: 'Category' }, { key: 'status', header: 'Status' }, { key: 'cost', header: 'Cost', align: 'right' as const }, { key: 'actions', header: 'Actions', align: 'right' as const }];
   const rows = items.map((repair) => ({
     date: new Date(repair.repairDate).toLocaleDateString(),
     property: <a href={`/admin/properties/${repair.propertyId}`}>{repair.property} / {repair.unit}</a>,
@@ -2099,6 +2164,7 @@ function AdminRepairsPage({ token }: { token: string }) {
     category: <>{repair.category}<br /><small>{repair.description}</small></>,
     status: <span className={`tenant-status ${repair.status.toLowerCase()}`}>{repair.status}</span>,
     cost: money(repair.cost),
+    actions: <a className="quiet-button export-button" href={`/admin/properties/${repair.propertyId}`}>View property</a>,
   }));
 
   return <AdminLayout active="repairs" token={token} kicker="RMS / ADMINISTRATION" title="Repairs.">
