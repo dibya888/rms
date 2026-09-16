@@ -8,7 +8,22 @@ describe('profile and password management', () => {
 
     await service.updateProfile('user-1', { fullName: '  New Name  ' });
 
-    expect(prisma.user.update).toHaveBeenCalledWith({ where: { id: 'user-1' }, data: { fullName: 'New Name' }, select: { id: true, email: true, fullName: true, phone: true } });
+    expect(prisma.user.update).toHaveBeenCalledWith({ where: { id: 'user-1' }, data: { fullName: 'New Name' }, select: { id: true, email: true, username: true, fullName: true, phone: true } });
+  });
+
+  it('rejects updating to a username already taken by a different account', async () => {
+    const prisma = { user: { findUnique: jest.fn().mockResolvedValue({ id: 'someone-else' }), update: jest.fn() } };
+    const service = new AuthService(prisma as never, {} as never, {} as never);
+
+    await expect(service.updateProfile('user-1', { username: 'taken' })).rejects.toThrow('username is already taken');
+    expect(prisma.user.update).not.toHaveBeenCalled();
+  });
+
+  it('allows keeping your own username unchanged', async () => {
+    const prisma = { user: { findUnique: jest.fn().mockResolvedValue({ id: 'user-1' }), update: jest.fn().mockResolvedValue({ id: 'user-1', email: 'owner@example.com', username: 'owner', fullName: 'Owner', phone: '017' }) } };
+    const service = new AuthService(prisma as never, {} as never, {} as never);
+
+    await expect(service.updateProfile('user-1', { username: 'owner' })).resolves.toEqual({ id: 'user-1', email: 'owner@example.com', username: 'owner', fullName: 'Owner', phone: '017' });
   });
 
   it('rejects a password change when the current password is wrong', async () => {

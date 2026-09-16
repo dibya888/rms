@@ -1,4 +1,4 @@
-import { IsEmail, IsOptional, IsString, Matches, MinLength } from 'class-validator';
+import { IsEmail, IsOptional, IsString, Matches, MaxLength, MinLength } from 'class-validator';
 import { ThemePreference } from '@prisma/client';
 
 export class RegisterDto {
@@ -18,6 +18,12 @@ export class RegisterDto {
   email!: string;
 
   @IsString()
+  @MinLength(3)
+  @MaxLength(30)
+  @Matches(/^[a-zA-Z0-9_.-]+$/, { message: 'username may only contain letters, numbers, dots, underscores, and hyphens' })
+  username!: string;
+
+  @IsString()
   @MinLength(7)
   phone!: string;
 
@@ -34,8 +40,13 @@ export class RegisterDto {
 }
 
 export class LoginDto {
-  @IsEmail()
-  email!: string;
+  // Accepts either the account's email address or its username — the
+  // frontend labels this field "Email or username" on both the owner and
+  // admin login forms. Kept loose (@IsString, not @IsEmail) since it may
+  // be either.
+  @IsString()
+  @MinLength(1)
+  identifier!: string;
 
   @IsString()
   @MinLength(1)
@@ -54,8 +65,12 @@ export class ForgotPasswordDto {
 }
 
 export class ResendActivationDto {
-  @IsEmail()
-  email!: string;
+  // Same identifier the login form takes (email or username) — the login
+  // screen's own "resend verification" link reuses whatever the person
+  // just typed there, which may not be an email address.
+  @IsString()
+  @MinLength(1)
+  identifier!: string;
 }
 
 export class ResetPasswordDto {
@@ -97,6 +112,13 @@ export class UpdateProfileDto {
   @IsString()
   @MinLength(1)
   fullName?: string;
+
+  @IsOptional()
+  @IsString()
+  @MinLength(3)
+  @MaxLength(30)
+  @Matches(/^[a-zA-Z0-9_.-]+$/, { message: 'username may only contain letters, numbers, dots, underscores, and hyphens' })
+  username?: string;
 
   @IsOptional()
   @IsString()

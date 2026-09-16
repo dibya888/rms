@@ -31,21 +31,28 @@ export class AuthService {
     }
 
     const email = dto.email.trim().toLowerCase();
-    const existing = await this.prisma.user.findUnique({ where: { email } });
-    if (existing) {
-      throw new ConflictException('email is already registered');
-    }
+    const username = dto.username.trim().toLowerCase();
+    // Checked separately (rather than one combined OR lookup) purely so the
+    // error message can say which one is taken — a combined query can't
+    // tell the caller that without a second lookup anyway.
+    const [existingEmail, existingUsername] = await Promise.all([
+      this.prisma.user.findUnique({ where: { email } }),
+      this.prisma.user.findUnique({ where: { username } }),
+    ]);
+    if (existingEmail) throw new ConflictException('email is already registered');
+    if (existingUsername) throw new ConflictException('username is already taken');
 
     const passwordHash = await argon2.hash(dto.password, { type: argon2.argon2id });
     const user = await this.prisma.user.create({
       data: {
         email,
+        username,
         phone: dto.phone.trim(),
         fullName: [dto.firstName, dto.middleName, dto.lastName].filter(Boolean).map((part) => part!.trim()).join(' '),
         passwordHash,
         userRoles: { create: { role: { connect: { name: 'OWNER_ADMIN' } } } },
       },
-      select: { id: true, email: true, fullName: true, status: true },
+      select: { id: true, email: true, username: true, fullName: true, status: true },
     });
 
     await this.issueActivationEmail(user.id, user.email);
@@ -54,10 +61,13 @@ export class AuthService {
   }
 
   async login(dto: LoginDto) {
-    const user = await this.prisma.user.findUnique({ where: { email: dto.email.trim().toLowerCase() } });
+    // The identifier may be either the account's email or its username —
+    // both are stored lowercased, so the lookup normalizes the same way.
+    const identifier = dto.identifier.trim().toLowerCase();
+    const user = await this.prisma.user.findFirst({ where: { OR: [{ email: identifier }, { username: identifier }] } });
     if (!user || !(await argon2.verify(user.passwordHash, dto.password))) {
       if (user) await this.prisma.auditLog.create({ data: { ownerId: null, actorUserId: user.id, action: 'LOGIN_FAILED', details: { email: user.email } } });
-      throw new UnauthorizedException('invalid email or password');
+      throw new UnauthorizedException('invalid credentials');
     }
     if (user.status !== 'ACTIVE') {
       await this.prisma.auditLog.create({ data: { ownerId: null, actorUserId: user.id, action: 'LOGIN_FAILED', details: { email: user.email, reason: 'inactive_account' } } });
@@ -84,7 +94,8 @@ export class AuthService {
   }
 
   async resendActivation(dto: ResendActivationDto) {
-    const user = await this.prisma.user.findUnique({ where: { email: dto.email.trim().toLowerCase() } });
+    const identifier = dto.identifier.trim().toLowerCase();
+    const user = await this.prisma.user.findFirst({ where: { OR: [{ email: identifier }, { username: identifier }] } });
     if (user && !user.emailVerifiedAt) {
       const resent = await this.issueActivationEmail(user.id, user.email);
       if (resent) await this.prisma.auditLog.create({ data: { ownerId: null, actorUserId: user.id, action: 'ACTIVATION_EMAIL_RESENT', details: { email: user.email, source: 'manual_request' } } });
@@ -164,7 +175,7 @@ export class AuthService {
   getProfile(userId: string) {
     return this.prisma.user.findUniqueOrThrow({
       where: { id: userId },
-      select: { id: true, email: true, fullName: true, phone: true, themePreference: true, emailVerifiedAt: true, createdAt: true },
+      select: { id: true, email: true, username: true, fullName: true, phone: true, themePreference: true, emailVerifiedAt: true, createdAt: true },
     });
   }
 
@@ -184,7 +195,13 @@ export class AuthService {
     const data: Prisma.UserUpdateInput = {};
     if (dto.fullName !== undefined) data.fullName = dto.fullName.trim();
     if (dto.phone !== undefined) data.phone = dto.phone.trim();
-    return this.prisma.user.update({ where: { id: userId }, data, select: { id: true, email: true, fullName: true, phone: true } });
+    if (dto.username !== undefined) {
+      const username = dto.username.trim().toLowerCase();
+      const existing = await this.prisma.user.findUnique({ where: { username } });
+      if (existing && existing.id !== userId) throw new ConflictException('username is already taken');
+      data.username = username;
+    }
+    return this.prisma.user.update({ where: { id: userId }, data, select: { id: true, email: true, username: true, fullName: true, phone: true } });
   }
 
   async changePassword(userId: string, dto: ChangePasswordDto) {

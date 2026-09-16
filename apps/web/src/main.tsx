@@ -338,13 +338,13 @@ function ThemeToggle({ token }: { token: string }) {
 }
 
 function Login({ error, onLogin, variant = 'owner' }: { error: string; onLogin: (token: string) => void; variant?: 'owner' | 'admin' }) {
-  const [email, setEmail] = useState(''); const [password, setPassword] = useState(''); const [busy, setBusy] = useState(false); const [message, setMessage] = useState(error); const [needsVerification, setNeedsVerification] = useState(false); const [resending, setResending] = useState(false);
+  const [identifier, setIdentifier] = useState(''); const [password, setPassword] = useState(''); const [busy, setBusy] = useState(false); const [message, setMessage] = useState(error); const [needsVerification, setNeedsVerification] = useState(false); const [resending, setResending] = useState(false);
   async function submit(event: FormEvent) {
     event.preventDefault(); setBusy(true); setMessage(''); setNeedsVerification(false);
     try {
       const csrfResponse = await fetch(`${apiUrl}/auth/csrf`, { credentials: 'include' });
       const { csrfToken } = await csrfResponse.json();
-      const response = await fetch(`${apiUrl}/auth/login`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken }, credentials: 'include', body: JSON.stringify({ email, password }) });
+      const response = await fetch(`${apiUrl}/auth/login`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken }, credentials: 'include', body: JSON.stringify({ identifier, password }) });
       const body = await response.json();
       if (!response.ok) { if (typeof body.message === 'string' && body.message.includes('verification')) setNeedsVerification(true); throw new Error(body.message ?? 'Unable to sign in.'); }
       if (variant === 'admin') {
@@ -382,17 +382,17 @@ function Login({ error, onLogin, variant = 'owner' }: { error: string; onLogin: 
       setBusy(false);
     }
   }
-  async function resendVerification() { setResending(true); try { const csrfResponse = await fetch(`${apiUrl}/auth/csrf`, { credentials: 'include' }); const { csrfToken } = await csrfResponse.json(); await fetch(`${apiUrl}/auth/resend-activation`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken }, credentials: 'include', body: JSON.stringify({ email }) }); setMessage('If that account needs verification, a new link is on its way to your email.'); } finally { setResending(false); } }
-  if (variant === 'admin') return <main className="auth-shell admin-auth-shell"><section className="auth-intro"><p className="eyebrow">RMS / ADMINISTRATION</p><h1>Platform control center.</h1><p className="lede">Restricted to authorized administrators. Every action here is audit-logged.</p></section><form className="auth-card" onSubmit={submit}><p className="card-kicker">Administrator sign-in</p><h2>Log in</h2><label>Email<input type="email" value={email} onChange={(event) => setEmail(event.target.value)} required autoComplete="email" /></label><label>Password<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} required autoComplete="current-password" /></label>{message && <p className="error">{message}</p>}<button className="primary-button" disabled={busy}>{busy ? 'Logging in...' : 'Log in'} <span>↗</span></button><p className="form-note"><a href="/forgot-password">Forgot password?</a></p></form></main>;
-  return <main className="auth-shell"><section className="auth-intro"><p className="eyebrow">RMS / OWNER CONSOLE</p><h1>Know what is happening across every door.</h1><p className="lede">A calm operating view for properties, tenants, payments, and the small details that keep rent on time.</p><div className="signal"><span className="status-dot" /> Portfolio systems ready</div></section><form className="auth-card" onSubmit={submit}><p className="card-kicker">Welcome back</p><h2>Log in</h2><label>Email<input type="email" value={email} onChange={(event) => setEmail(event.target.value)} required autoComplete="email" /></label><label>Password<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} required autoComplete="current-password" /></label>{message && <p className="error">{message}</p>}{needsVerification && <button type="button" className="quiet-button" disabled={resending} onClick={resendVerification}>{resending ? 'Sending...' : 'Resend verification email'}</button>}<button className="primary-button" disabled={busy}>{busy ? 'Logging in...' : 'Log in'} <span>↗</span></button><p className="form-note"><a href="/forgot-password">Forgot password?</a> · <a href="/register">Sign up</a></p></form></main>;
+  async function resendVerification() { setResending(true); try { const csrfResponse = await fetch(`${apiUrl}/auth/csrf`, { credentials: 'include' }); const { csrfToken } = await csrfResponse.json(); await fetch(`${apiUrl}/auth/resend-activation`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken }, credentials: 'include', body: JSON.stringify({ identifier }) }); setMessage('If that account needs verification, a new link is on its way to your email.'); } finally { setResending(false); } }
+  if (variant === 'admin') return <main className="auth-shell admin-auth-shell"><section className="auth-intro"><p className="eyebrow">RMS / ADMINISTRATION</p><h1>Platform control center.</h1><p className="lede">Restricted to authorized administrators. Every action here is audit-logged.</p></section><form className="auth-card" onSubmit={submit}><p className="card-kicker">Administrator sign-in</p><h2>Log in</h2><label>Email or username<input type="text" value={identifier} onChange={(event) => setIdentifier(event.target.value)} required autoComplete="username" /></label><label>Password<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} required autoComplete="current-password" /></label>{message && <p className="error">{message}</p>}<button className="primary-button" disabled={busy}>{busy ? 'Logging in...' : 'Log in'} <span>↗</span></button><p className="form-note"><a href="/forgot-password">Forgot password?</a></p></form></main>;
+  return <main className="auth-shell"><section className="auth-intro"><p className="eyebrow">RMS / OWNER CONSOLE</p><h1>Know what is happening across every door.</h1><p className="lede">A calm operating view for properties, tenants, payments, and the small details that keep rent on time.</p><div className="signal"><span className="status-dot" /> Portfolio systems ready</div></section><form className="auth-card" onSubmit={submit}><p className="card-kicker">Welcome back</p><h2>Log in</h2><label>Email or username<input type="text" value={identifier} onChange={(event) => setIdentifier(event.target.value)} required autoComplete="username" /></label><label>Password<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} required autoComplete="current-password" /></label>{message && <p className="error">{message}</p>}{needsVerification && <button type="button" className="quiet-button" disabled={resending} onClick={resendVerification}>{resending ? 'Sending...' : 'Resend verification email'}</button>}<button className="primary-button" disabled={busy}>{busy ? 'Logging in...' : 'Log in'} <span>↗</span></button><p className="form-note"><a href="/forgot-password">Forgot password?</a> · <a href="/register">Sign up</a></p></form></main>;
 }
 
 function Register() {
-  const [fields, setFields] = useState({ firstName: '', middleName: '', lastName: '', email: '', phone: '', password: '', confirmPassword: '' });
+  const [fields, setFields] = useState({ firstName: '', middleName: '', lastName: '', email: '', username: '', phone: '', password: '', confirmPassword: '' });
   const [message, setMessage] = useState(''); const [busy, setBusy] = useState(false);
   async function submit(event: FormEvent) { event.preventDefault(); setBusy(true); setMessage(''); try { const csrfResponse = await fetch(`${apiUrl}/auth/csrf`, { credentials: 'include' }); const { csrfToken } = await csrfResponse.json(); const response = await fetch(`${apiUrl}/auth/register`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken }, credentials: 'include', body: JSON.stringify(fields) }); const body = await response.json(); if (!response.ok) throw new Error(Array.isArray(body.message) ? body.message.join(', ') : body.message ?? 'Unable to register.'); setMessage('Registration complete. Check your email to activate your account before logging in.'); } catch (reason) { setMessage(reason instanceof Error ? reason.message : 'Unable to register.'); } finally { setBusy(false); } }
   const update = (key: keyof typeof fields) => (event: ChangeEvent<HTMLInputElement>) => setFields({ ...fields, [key]: event.target.value });
-  return <main className="auth-shell"><section className="auth-intro"><p className="eyebrow">RMS / OWNER CONSOLE</p><h1>Make the whole portfolio easier to hold.</h1><p className="lede">Create an owner workspace for properties, tenants, payments, and monthly reporting.</p></section><form className="auth-card" onSubmit={submit}><p className="card-kicker">New account</p><h2>Sign up</h2><div className="name-fields"><label>First name<input value={fields.firstName} onChange={update('firstName')} required autoComplete="given-name" /></label><label>Middle name <span className="optional">optional</span><input value={fields.middleName} onChange={update('middleName')} autoComplete="additional-name" /></label><label>Last name<input value={fields.lastName} onChange={update('lastName')} required autoComplete="family-name" /></label></div><label>Email<input type="email" value={fields.email} onChange={update('email')} required autoComplete="email" /></label><label>Phone<input value={fields.phone} onChange={update('phone')} required autoComplete="tel" /></label><label>Password<input type="password" value={fields.password} onChange={update('password')} minLength={10} required autoComplete="new-password" /></label><label>Confirm password<input type="password" value={fields.confirmPassword} onChange={update('confirmPassword')} minLength={10} required autoComplete="new-password" /></label>{message && <p className="form-note" role="status">{message}</p>}<button className="primary-button" disabled={busy}>{busy ? 'Registering...' : 'Sign up'} <span>↗</span></button><p className="form-note">Already registered? <a href="/">Log in</a></p></form></main>;
+  return <main className="auth-shell"><section className="auth-intro"><p className="eyebrow">RMS / OWNER CONSOLE</p><h1>Make the whole portfolio easier to hold.</h1><p className="lede">Create an owner workspace for properties, tenants, payments, and monthly reporting.</p></section><form className="auth-card" onSubmit={submit}><p className="card-kicker">New account</p><h2>Sign up</h2><div className="name-fields"><label>First name<input value={fields.firstName} onChange={update('firstName')} required autoComplete="given-name" /></label><label>Middle name <span className="optional">optional</span><input value={fields.middleName} onChange={update('middleName')} autoComplete="additional-name" /></label><label>Last name<input value={fields.lastName} onChange={update('lastName')} required autoComplete="family-name" /></label></div><label>Email<input type="email" value={fields.email} onChange={update('email')} required autoComplete="email" /></label><label>Username<input value={fields.username} onChange={update('username')} required minLength={3} maxLength={30} pattern="[a-zA-Z0-9_.-]+" title="Letters, numbers, dots, underscores, and hyphens only" autoComplete="username" /></label><label>Phone<input value={fields.phone} onChange={update('phone')} required autoComplete="tel" /></label><label>Password<input type="password" value={fields.password} onChange={update('password')} minLength={10} required autoComplete="new-password" /></label><label>Confirm password<input type="password" value={fields.confirmPassword} onChange={update('confirmPassword')} minLength={10} required autoComplete="new-password" /></label>{message && <p className="form-note" role="status">{message}</p>}<button className="primary-button" disabled={busy}>{busy ? 'Registering...' : 'Sign up'} <span>↗</span></button><p className="form-note">Already registered? <a href="/">Log in</a></p></form></main>;
 }
 
 function Activate() {
@@ -1531,7 +1531,7 @@ function AdminLayout({ active, token, title, kicker, children }: { active: strin
 }
 
 type AdminSearchResults = {
-  users: Array<{ id: string; fullName: string; email: string; status: string }>;
+  users: Array<{ id: string; fullName: string; email: string; username: string; status: string }>;
   properties: Array<{ id: string; name: string; owner: { id: string; fullName: string }; unitCount: number; tenantCount: number }>;
   tenants: Array<{ id: string; name: string; phone: string; property: { id: string; name: string } | null; unitNo: string | null }>;
   units: Array<{ id: string; unitNo: string; status: string; property: { id: string; name: string } }>;
@@ -1562,7 +1562,7 @@ function AdminSearch({ token }: { token: string }) {
     <input type="search" placeholder="Search users, properties, tenants, units…" value={q} onFocus={() => setOpen(true)} onChange={(event) => { setQ(event.target.value); setOpen(true); }} aria-label="Global admin search" />
     {open && q.trim().length >= 2 && <div className="admin-search-results">
       {!hasResults && <p className="empty-state">No matches.</p>}
-      {results?.users.map((user) => <a key={user.id} className="admin-search-row" href={`/admin/users/${user.id}`}><span className="admin-search-kind">USER</span><strong>{user.fullName}</strong><small>{user.email} · {user.status}</small></a>)}
+      {results?.users.map((user) => <a key={user.id} className="admin-search-row" href={`/admin/users/${user.id}`}><span className="admin-search-kind">USER</span><strong>{user.fullName}</strong><small>@{user.username} · {user.email} · {user.status}</small></a>)}
       {results?.properties.map((property) => <a key={property.id} className="admin-search-row" href={`/admin/properties/${property.id}`}><span className="admin-search-kind">PROPERTY</span><strong>{property.name}</strong><small>Owner: {property.owner.fullName} · {property.unitCount} units · {property.tenantCount} occupied</small></a>)}
       {results?.tenants.map((tenant) => <a key={tenant.id} className="admin-search-row" href={tenant.property ? `/admin/properties/${tenant.property.id}` : '/admin/tenants'}><span className="admin-search-kind">TENANT</span><strong>{tenant.name}</strong><small>{tenant.property?.name ?? 'Unassigned'}{tenant.unitNo ? ` · Unit ${tenant.unitNo}` : ''}</small></a>)}
       {results?.units.map((unit) => <a key={unit.id} className="admin-search-row" href={`/admin/properties/${unit.property.id}`}><span className="admin-search-kind">UNIT</span><strong>Unit {unit.unitNo}</strong><small>{unit.property.name} · {unit.status}</small></a>)}
@@ -1690,7 +1690,7 @@ function AdminOverview({ token }: { token: string }) {
   </AdminLayout>;
 }
 
-type AdminUser = { id: string; fullName: string; email: string; phone: string; status: string; emailVerifiedAt: string | null; lastLoginAt: string | null; createdAt: string; userRoles?: Array<{ role: { id: string; name: string } }>; _count?: { properties: number; tenants: number; units: number } };
+type AdminUser = { id: string; fullName: string; email: string; username: string; phone: string; status: string; emailVerifiedAt: string | null; lastLoginAt: string | null; createdAt: string; userRoles?: Array<{ role: { id: string; name: string } }>; _count?: { properties: number; tenants: number; units: number } };
 
 // Platform accounts: search/filter, verification resend, status toggle,
 // role change, and the permanent-delete danger action. Split out of the old
@@ -1762,7 +1762,7 @@ function AdminUsersPage({ token }: { token: string }) {
     try {
       const csrfResponse = await fetch(`${apiUrl}/auth/csrf`, { credentials: 'include' });
       const { csrfToken } = await csrfResponse.json();
-      await fetch(`${apiUrl}/auth/resend-activation`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken }, credentials: 'include', body: JSON.stringify({ email: user.email }) });
+      await fetch(`${apiUrl}/auth/resend-activation`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken }, credentials: 'include', body: JSON.stringify({ identifier: user.email }) });
       setMessage(`Verification link re-sent to ${user.email}.`);
     } finally {
       setResendingUserId(null);
@@ -1793,13 +1793,13 @@ function AdminUsersPage({ token }: { token: string }) {
     <article className="dashboard-card payments-card">
       <div className="card-heading"><div><p className="card-kicker">Accounts</p><h2>{total} total</h2></div></div>
       <div className="admin-toolbar">
-        <input type="search" placeholder="Search by name or email" value={search} onChange={(event) => { setSearch(event.target.value); setSkip(0); }} aria-label="Search users" />
+        <input type="search" placeholder="Search by name, email, or username" value={search} onChange={(event) => { setSearch(event.target.value); setSkip(0); }} aria-label="Search users" />
         <select aria-label="Filter by status" value={statusFilter} onChange={(event) => { setStatusFilter(event.target.value); setSkip(0); }}><option value="">All statuses</option><option value="ACTIVE">Active</option><option value="SUSPENDED">Suspended</option><option value="DISABLED">Disabled</option></select>
         <label className="admin-checkbox-filter"><input type="checkbox" checked={unverifiedOnly} onChange={(event) => { setUnverifiedOnly(event.target.checked); setSkip(0); }} /> Unverified only</label>
       </div>
       {!loading && users.length === 0 && <p className="empty-state">No users match this search.</p>}
       {users.map((user) => <div className="payment-row" key={user.id}>
-        <div><a href={`/admin/users/${user.id}`}><strong>{user.fullName}</strong></a><small>{user.email} · {user.phone}</small><small>{user._count?.properties ?? 0} properties · {user._count?.units ?? 0} units · {user._count?.tenants ?? 0} tenants</small></div>
+        <div><a href={`/admin/users/${user.id}`}><strong>{user.fullName}</strong></a><small>@{user.username} · {user.email} · {user.phone}</small><small>{user._count?.properties ?? 0} properties · {user._count?.units ?? 0} units · {user._count?.tenants ?? 0} tenants</small></div>
         <div className="user-row-actions">
           <span className={`tenant-status ${user.status.toLowerCase()}`}>{user.status}</span>
           {!user.emailVerifiedAt && <span className="tenant-status unverified-badge">Unverified</span>}
@@ -1843,6 +1843,7 @@ function AdminUserDetailPage({ token, userId }: { token: string; userId: string 
       <article className="dashboard-card">
         <div className="card-heading"><div><p className="card-kicker">Account</p><h2>Profile</h2></div></div>
         <div className="settlement-preview">
+          <div><span>Username</span><strong>@{user.username}</strong></div>
           <div><span>Email</span><strong>{user.email}</strong></div>
           <div><span>Phone</span><strong>{user.phone}</strong></div>
           <div><span>Status</span><strong>{user.status}</strong></div>
@@ -2464,7 +2465,7 @@ function Metric({
   );
 }
 
-type ProfileData = { id: string; email: string; fullName: string; phone: string; themePreference: string; emailVerifiedAt: string | null; createdAt: string };
+type ProfileData = { id: string; email: string; username: string; fullName: string; phone: string; themePreference: string; emailVerifiedAt: string | null; createdAt: string };
 
 // Dependency-free donut chart: plain SVG stroke-dasharray segments around a
 // circle, in the same spirit as the hand-rolled bar/progress visuals already
@@ -2509,6 +2510,7 @@ function PieChart({ segments, size = 128, thickness = 18, centerLabel, centerNot
 function Profile({ token }: { token: string }) {
   const [profile, setProfile] = useState<ProfileData | null>(null);
   const [fullName, setFullName] = useState('');
+  const [username, setUsername] = useState('');
   const [phone, setPhone] = useState('');
   const [savingProfile, setSavingProfile] = useState(false);
   const [profileMessage, setProfileMessage] = useState('');
@@ -2521,7 +2523,7 @@ function Profile({ token }: { token: string }) {
   useEffect(() => {
     fetch(`${apiUrl}/auth/profile`, { headers: { Authorization: `Bearer ${token}` } })
       .then((response) => response.json())
-      .then((data: ProfileData) => { setProfile(data); setFullName(data.fullName); setPhone(data.phone); });
+      .then((data: ProfileData) => { setProfile(data); setFullName(data.fullName); setUsername(data.username); setPhone(data.phone); });
   }, [token]);
 
   async function saveProfile(event: FormEvent) {
@@ -2530,10 +2532,10 @@ function Profile({ token }: { token: string }) {
     try {
       const csrfResponse = await fetch(`${apiUrl}/auth/csrf`, { credentials: 'include' });
       const { csrfToken } = await csrfResponse.json();
-      const response = await fetch(`${apiUrl}/auth/profile`, { method: 'PATCH', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}`, 'X-CSRF-Token': csrfToken }, credentials: 'include', body: JSON.stringify({ fullName, phone }) });
+      const response = await fetch(`${apiUrl}/auth/profile`, { method: 'PATCH', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}`, 'X-CSRF-Token': csrfToken }, credentials: 'include', body: JSON.stringify({ fullName, username, phone }) });
       const body = await response.json();
       if (!response.ok) throw new Error(body.message ?? 'Unable to update your profile.');
-      setProfile((current) => current ? { ...current, fullName: body.fullName, phone: body.phone } : current);
+      setProfile((current) => current ? { ...current, fullName: body.fullName, username: body.username, phone: body.phone } : current);
       setProfileMessage('Profile updated. The dashboard greeting picks up your new name the next time you sign in.');
     } catch (error) {
       setProfileMessage(error instanceof Error ? error.message : 'Unable to update your profile.');
@@ -2566,7 +2568,7 @@ function Profile({ token }: { token: string }) {
 
   if (!profile) return <main className="loading-screen"><span className="status-dot" /> Loading profile</main>;
 
-  return <main className="app-shell"><header className="topbar"><div className="brand"><img className="brand-mark" src="/icon-192.png" alt="RMS" /><span>RMS</span></div><TopNav active="" /><AccountMenu /></header><div className="content"><section className="welcome-row"><div><p className="eyebrow">RMS / ACCOUNT</p><h1>Profile.</h1><p className="subtle">Your account details and security settings.</p></div></section><section className="dashboard-grid"><form className="dashboard-card" onSubmit={saveProfile}><div className="card-heading"><div><p className="card-kicker">Account</p><h2>Personal details</h2></div></div><label>Email<input value={profile.email} disabled /></label><label>Full name<input value={fullName} onChange={(event) => setFullName(event.target.value)} required minLength={1} /></label><label>Phone<input value={phone} onChange={(event) => setPhone(event.target.value)} required minLength={7} /></label>{profileMessage && <p className={profileMessage.startsWith('Profile updated') ? 'form-note' : 'error'} role="status">{profileMessage}</p>}<button className="primary-button" disabled={savingProfile}>{savingProfile ? 'Saving...' : 'Save changes'}</button></form><form className="dashboard-card" onSubmit={changePassword}><div className="card-heading"><div><p className="card-kicker">Security</p><h2>Change password</h2></div></div><label>Current password<input type="password" value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} required autoComplete="current-password" /></label><label>New password<input type="password" value={newPassword} onChange={(event) => setNewPassword(event.target.value)} minLength={10} required autoComplete="new-password" /></label><label>Confirm new password<input type="password" value={confirmNewPassword} onChange={(event) => setConfirmNewPassword(event.target.value)} minLength={10} required autoComplete="new-password" /></label>{passwordMessage && <p className="error" role="status">{passwordMessage}</p>}<button className="primary-button" disabled={changingPassword}>{changingPassword ? 'Updating...' : 'Change password'}</button><p className="form-note">Changing your password signs you out everywhere. You will need to log in again.</p></form></section></div></main>;
+  return <main className="app-shell"><header className="topbar"><div className="brand"><img className="brand-mark" src="/icon-192.png" alt="RMS" /><span>RMS</span></div><TopNav active="" /><AccountMenu /></header><div className="content"><section className="welcome-row"><div><p className="eyebrow">RMS / ACCOUNT</p><h1>Profile.</h1><p className="subtle">Your account details and security settings.</p></div></section><section className="dashboard-grid"><form className="dashboard-card" onSubmit={saveProfile}><div className="card-heading"><div><p className="card-kicker">Account</p><h2>Personal details</h2></div></div><label>Email<input value={profile.email} disabled /></label><label>Username<input value={username} onChange={(event) => setUsername(event.target.value)} required minLength={3} maxLength={30} pattern="[a-zA-Z0-9_.-]+" title="Letters, numbers, dots, underscores, and hyphens only" autoComplete="username" /></label><label>Full name<input value={fullName} onChange={(event) => setFullName(event.target.value)} required minLength={1} /></label>{profile.username !== username && <p className="form-note">You'll sign in with this username the next time you log in — @{profile.username} will stop working.</p>}<label>Phone<input value={phone} onChange={(event) => setPhone(event.target.value)} required minLength={7} /></label>{profileMessage && <p className={profileMessage.startsWith('Profile updated') ? 'form-note' : 'error'} role="status">{profileMessage}</p>}<button className="primary-button" disabled={savingProfile}>{savingProfile ? 'Saving...' : 'Save changes'}</button></form><form className="dashboard-card" onSubmit={changePassword}><div className="card-heading"><div><p className="card-kicker">Security</p><h2>Change password</h2></div></div><label>Current password<input type="password" value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} required autoComplete="current-password" /></label><label>New password<input type="password" value={newPassword} onChange={(event) => setNewPassword(event.target.value)} minLength={10} required autoComplete="new-password" /></label><label>Confirm new password<input type="password" value={confirmNewPassword} onChange={(event) => setConfirmNewPassword(event.target.value)} minLength={10} required autoComplete="new-password" /></label>{passwordMessage && <p className="error" role="status">{passwordMessage}</p>}<button className="primary-button" disabled={changingPassword}>{changingPassword ? 'Updating...' : 'Change password'}</button><p className="form-note">Changing your password signs you out everywhere. You will need to log in again.</p></form></section></div></main>;
 }
 
 function Settings({ token }: { token: string }) {

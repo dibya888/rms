@@ -110,7 +110,7 @@ export class AdminController {
     const where: Prisma.UserWhereInput = {
       ...(request.query.status ? { status: request.query.status as Prisma.UserWhereInput['status'] } : {}),
       ...(request.query.unverified === '1' ? { emailVerifiedAt: null } : {}),
-      ...(q ? { OR: [{ fullName: { contains: q, mode: 'insensitive' as const } }, { email: { contains: q, mode: 'insensitive' as const } }] } : {}),
+      ...(q ? { OR: [{ fullName: { contains: q, mode: 'insensitive' as const } }, { email: { contains: q, mode: 'insensitive' as const } }, { username: { contains: q, mode: 'insensitive' as const } }] } : {}),
     };
 
     return Promise.all([
@@ -119,6 +119,7 @@ export class AdminController {
         select: {
           id: true,
           email: true,
+          username: true,
           fullName: true,
           phone: true,
           status: true,
@@ -146,7 +147,7 @@ export class AdminController {
     return this.prisma.withSystemAdmin(async (transaction) => {
       const user = await transaction.user.findUnique({
         where: { id: userId },
-        select: { id: true, email: true, fullName: true, phone: true, status: true, emailVerifiedAt: true, lastLoginAt: true, createdAt: true, userRoles: { include: { role: true } } },
+        select: { id: true, email: true, username: true, fullName: true, phone: true, status: true, emailVerifiedAt: true, lastLoginAt: true, createdAt: true, userRoles: { include: { role: true } } },
       });
       if (!user) throw new NotFoundException('user not found');
 
@@ -189,8 +190,8 @@ export class AdminController {
     return this.prisma.withSystemAdmin(async (transaction) => {
       const [users, properties, tenants, units] = await Promise.all([
         transaction.user.findMany({
-          where: { OR: [{ fullName: { contains: q, mode: 'insensitive' as const } }, { email: { contains: q, mode: 'insensitive' as const } }] },
-          select: { id: true, fullName: true, email: true, status: true },
+          where: { OR: [{ fullName: { contains: q, mode: 'insensitive' as const } }, { email: { contains: q, mode: 'insensitive' as const } }, { username: { contains: q, mode: 'insensitive' as const } }] },
+          select: { id: true, fullName: true, email: true, username: true, status: true },
           take: 5,
         }),
         transaction.property.findMany({
