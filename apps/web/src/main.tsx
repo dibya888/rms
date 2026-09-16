@@ -42,6 +42,14 @@ const money = (value: string | number) => `${getCurrencySymbol()}${new Intl.Numb
 // exactly; a leading ':' segment captures whatever's in that position.
 // Everything else in this app is plain exact-string pathname matching, so
 // this stays a small helper rather than pulling in a routing library.
+// Reads a query-string param from the current URL for a page's initial
+// filter state — lets links like the admin dashboard's "Needs Attention"
+// list deep-link straight into a pre-filtered list screen (e.g.
+// /admin/users?unverified=1) instead of landing on an unfiltered table.
+function initialSearchParam(key: string): string {
+  return typeof window !== 'undefined' ? new URLSearchParams(window.location.search).get(key) ?? '' : '';
+}
+
 function matchPath(pattern: string, pathname: string): Record<string, string> | null {
   const patternParts = pattern.split('/').filter(Boolean);
   const pathParts = pathname.split('/').filter(Boolean);
@@ -226,14 +234,7 @@ function App() {
   useEffect(() => {
     if (!token) return;
     // Admin pages fetch their own data (AdminOverview, etc.) and don't need
-    // the owner dashboard summary at all. Skipping it here also avoids the
-    // one real failure mode this used to have: a SYSTEM_ADMIN-only account
-    // (no OWNER_ADMIN role, so no owned properties) landing on a non-admin
-    // path — root `/`, a stray "Return to dashboard" link — would try to
-    // load an owner dashboard it fundamentally has nothing to show, and get
-    // stuck on a permanent "Unable to load your dashboard" retry screen.
-    // The redirect below sends that account straight to /admin instead; on
-    // an /admin/* path there's nothing to redirect and nothing to load.
+    // the owner dashboard summary at all.
     if (window.location.pathname.startsWith('/admin')) return;
     let cancelled = false;
     async function load(withToken: string, alreadyRetried: boolean): Promise<void> {
@@ -273,13 +274,16 @@ function App() {
       }
       const [nextSummary, me] = await Promise.all([summaryResponse.json() as Promise<Summary>, meResponse.json() as Promise<{ user: { firstName?: string; roles?: string[] } }>]);
       if (cancelled) return;
-      const roles = me.user.roles ?? [];
-      if (roles.includes('SYSTEM_ADMIN') && !roles.includes('OWNER_ADMIN')) {
-        // Pure admin account, no owner data to show — go straight to the
-        // control center instead of rendering an empty owner dashboard.
-        window.location.href = '/admin';
-        return;
-      }
+      // Deliberately no role-based redirect here: which dashboard an
+      // account lands on is decided by which login page it signed in
+      // through (the "user" login vs. the "admin" login at /admin), not by
+      // the roles on the account. A SYSTEM_ADMIN account can also be a
+      // property owner, so routing by role would send it to the wrong
+      // place depending on which hat it's currently wearing. Signing in at
+      // /admin lands here with pathname already under /admin (handled by
+      // the guard above); signing in at the normal login always renders
+      // the owner dashboard below, even for an admin-only account with
+      // nothing to show yet.
       setSummary(nextSummary);
       setFirstName(me.user.firstName ?? '');
       setError('');
@@ -311,6 +315,8 @@ function App() {
   if (window.location.pathname === '/admin/properties') return <AdminPropertiesPage token={token} />;
   if (window.location.pathname === '/admin/units') return <AdminUnitsPage token={token} />;
   if (window.location.pathname === '/admin/tenants') return <AdminTenantsPage token={token} />;
+  if (window.location.pathname === '/admin/leases') return <AdminLeasesPage token={token} />;
+  if (window.location.pathname === '/admin/settlements') return <AdminSettlementsPage token={token} />;
   if (window.location.pathname === '/admin/payments') return <AdminPaymentsPage token={token} />;
   if (window.location.pathname === '/admin/bills') return <AdminRentBillsPage token={token} />;
   if (window.location.pathname === '/admin/repairs') return <AdminRepairsPage token={token} />;
@@ -333,7 +339,49 @@ function ThemeToggle({ token }: { token: string }) {
 
 function Login({ error, onLogin, variant = 'owner' }: { error: string; onLogin: (token: string) => void; variant?: 'owner' | 'admin' }) {
   const [email, setEmail] = useState(''); const [password, setPassword] = useState(''); const [busy, setBusy] = useState(false); const [message, setMessage] = useState(error); const [needsVerification, setNeedsVerification] = useState(false); const [resending, setResending] = useState(false);
-  async function submit(event: FormEvent) { event.preventDefault(); setBusy(true); setMessage(''); setNeedsVerification(false); try { const csrfResponse = await fetch(`${apiUrl}/auth/csrf`, { credentials: 'include' }); const { csrfToken } = await csrfResponse.json(); const response = await fetch(`${apiUrl}/auth/login`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken }, credentials: 'include', body: JSON.stringify({ email, password }) }); const body = await response.json(); if (!response.ok) { if (typeof body.message === 'string' && body.message.includes('verification')) setNeedsVerification(true); throw new Error(body.message ?? 'Unable to sign in.'); } onLogin(body.accessToken); } catch (reason) { setMessage(reason instanceof Error ? reason.message : 'Unable to sign in.'); } finally { setBusy(false); } }
+  async function submit(event: FormEvent) {
+    event.preventDefault(); setBusy(true); setMessage(''); setNeedsVerification(false);
+    try {
+      const csrfResponse = await fetch(`${apiUrl}/auth/csrf`, { credentials: 'include' });
+      const { csrfToken } = await csrfResponse.json();
+      const response = await fetch(`${apiUrl}/auth/login`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken }, credentials: 'include', body: JSON.stringify({ email, password }) });
+      const body = await response.json();
+      if (!response.ok) { if (typeof body.message === 'string' && body.message.includes('verification')) setNeedsVerification(true); throw new Error(body.message ?? 'Unable to sign in.'); }
+      if (variant === 'admin') {
+        // Credentials alone don't get you into the control center: this is
+        // the same /auth/login every account uses, so a correct password
+        // only proves who the person is, not that they're a SYSTEM_ADMIN.
+        // Without this check, a non-admin account would land on /admin and
+        // just see a generic "Admin access is required" once its API calls
+        // started 403ing — technically safe (the server enforces the real
+        // authorization on every admin endpoint) but a confusing dead end.
+        // Checking here means a non-admin account never sees the admin
+        // shell at all, and the session this login just started is revoked
+        // immediately rather than left sitting around unused.
+        const meResponse = await fetch(`${apiUrl}/auth/me`, { headers: { Authorization: `Bearer ${body.accessToken}` } });
+        if (!meResponse.ok) {
+          // /auth/me only requires a valid token, no particular role — a
+          // failure here is a server hiccup, not proof the account lacks
+          // admin access, so it gets the generic retryable message instead
+          // of the specific "no administrator access" one below.
+          throw new Error('Unable to verify account access. Please try again.');
+        }
+        const me = await meResponse.json();
+        const roles: string[] = me?.user?.roles ?? [];
+        if (!roles.includes('SYSTEM_ADMIN')) {
+          const logoutCsrf = await fetch(`${apiUrl}/auth/csrf`, { credentials: 'include' });
+          const { csrfToken: logoutToken } = await logoutCsrf.json();
+          await fetch(`${apiUrl}/auth/logout`, { method: 'POST', headers: { 'X-CSRF-Token': logoutToken }, credentials: 'include' }).catch(() => undefined);
+          throw new Error('This account does not have administrator access.');
+        }
+      }
+      onLogin(body.accessToken);
+    } catch (reason) {
+      setMessage(reason instanceof Error ? reason.message : 'Unable to sign in.');
+    } finally {
+      setBusy(false);
+    }
+  }
   async function resendVerification() { setResending(true); try { const csrfResponse = await fetch(`${apiUrl}/auth/csrf`, { credentials: 'include' }); const { csrfToken } = await csrfResponse.json(); await fetch(`${apiUrl}/auth/resend-activation`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken }, credentials: 'include', body: JSON.stringify({ email }) }); setMessage('If that account needs verification, a new link is on its way to your email.'); } finally { setResending(false); } }
   if (variant === 'admin') return <main className="auth-shell admin-auth-shell"><section className="auth-intro"><p className="eyebrow">RMS / ADMINISTRATION</p><h1>Platform control center.</h1><p className="lede">Restricted to authorized administrators. Every action here is audit-logged.</p></section><form className="auth-card" onSubmit={submit}><p className="card-kicker">Administrator sign-in</p><h2>Log in</h2><label>Email<input type="email" value={email} onChange={(event) => setEmail(event.target.value)} required autoComplete="email" /></label><label>Password<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} required autoComplete="current-password" /></label>{message && <p className="error">{message}</p>}<button className="primary-button" disabled={busy}>{busy ? 'Logging in...' : 'Log in'} <span>↗</span></button><p className="form-note"><a href="/forgot-password">Forgot password?</a></p></form></main>;
   return <main className="auth-shell"><section className="auth-intro"><p className="eyebrow">RMS / OWNER CONSOLE</p><h1>Know what is happening across every door.</h1><p className="lede">A calm operating view for properties, tenants, payments, and the small details that keep rent on time.</p><div className="signal"><span className="status-dot" /> Portfolio systems ready</div></section><form className="auth-card" onSubmit={submit}><p className="card-kicker">Welcome back</p><h2>Log in</h2><label>Email<input type="email" value={email} onChange={(event) => setEmail(event.target.value)} required autoComplete="email" /></label><label>Password<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} required autoComplete="current-password" /></label>{message && <p className="error">{message}</p>}{needsVerification && <button type="button" className="quiet-button" disabled={resending} onClick={resendVerification}>{resending ? 'Sending...' : 'Resend verification email'}</button>}<button className="primary-button" disabled={busy}>{busy ? 'Logging in...' : 'Log in'} <span>↗</span></button><p className="form-note"><a href="/forgot-password">Forgot password?</a> · <a href="/register">Sign up</a></p></form></main>;
@@ -1452,9 +1500,11 @@ const ADMIN_NAV: Array<{ key: string; label: string; href: string }> = [
   { key: 'properties', label: 'Properties', href: '/admin/properties' },
   { key: 'units', label: 'Units', href: '/admin/units' },
   { key: 'tenants', label: 'Tenants', href: '/admin/tenants' },
-  { key: 'payments', label: 'Payments', href: '/admin/payments' },
+  { key: 'leases', label: 'Leases', href: '/admin/leases' },
   { key: 'bills', label: 'Rent bills', href: '/admin/bills' },
   { key: 'repairs', label: 'Repairs', href: '/admin/repairs' },
+  { key: 'settlements', label: 'Settlements', href: '/admin/settlements' },
+  { key: 'payments', label: 'Payments', href: '/admin/payments' },
   { key: 'audit', label: 'Audit logs', href: '/admin/audit-logs' },
   { key: 'system', label: 'System', href: '/admin/system' },
 ];
@@ -1567,18 +1617,22 @@ function AdminTable({ columns, rows, rowIds, selectedIds, onSelectionChange, tot
 type AdminOverviewData = {
   users: { total: number; active: number; suspended: number; disabled: number; unverified: number };
   portfolio: { totalOwners: number; totalProperties: number; totalUnits: number; occupiedUnits: number; availableUnits: number; totalTenants: number; totalLeases: number; totalRentBills: number; totalPayments: number };
-  billing: { thisMonthIncome: string; totalOutstanding: string };
   repairs: { open: number; inProgress: number; completed: number; cancelled: number };
-  growth: Array<{ month: string; newUsers: number; newProperties: number; newTenants: number; income: string; repairCost: string }>;
+  adminAttention: Array<{ key: string; count: number; label: string; href: string }>;
+  growth: Array<{ month: string; newUsers: number; newProperties: number; newTenants: number }>;
 };
 type AdminActivity = { id: string; action: string; createdAt: string; actor: { fullName: string } | null };
 
-// The Admin Control Center home page: platform-wide metrics, a 6-month
-// growth trend (new users/properties/tenants), a revenue trend (income vs.
-// repair cost), occupancy and repair-pipeline donuts, and a recent-activity
-// feed pulled straight from the audit log (no fabricated activity — this is
-// GET /admin/audit-logs?take=10, the same data the Audit logs page shows in
-// full).
+// The Admin Control Center home page: platform-wide operational metrics, a
+// 6-month growth trend (new users/properties/tenants — no revenue figures;
+// rental payments are the owners' business finances, not an RMS platform
+// metric), occupancy and repair-pipeline donuts, an "Admin attention" list
+// scoped strictly to account-health issues SYSTEM_ADMIN itself is
+// responsible for (never a property owner's day-to-day rental problems —
+// unpaid rent, open repairs, and lease renewals stay on the owner
+// dashboard), and a recent-activity feed pulled straight from the audit
+// log (no fabricated activity — this is GET /admin/audit-logs?take=10, the
+// same data the Audit logs page shows in full).
 function AdminOverview({ token }: { token: string }) {
   const [overview, setOverview] = useState<AdminOverviewData | null>(null);
   const [activity, setActivity] = useState<AdminActivity[]>([]);
@@ -1595,8 +1649,9 @@ function AdminOverview({ token }: { token: string }) {
   }, [token]);
 
   const growthMax = overview ? Math.max(...overview.growth.flatMap((item) => [item.newUsers, item.newProperties, item.newTenants]), 1) : 1;
-  const revenueMax = overview ? Math.max(...overview.growth.flatMap((item) => [Number(item.income), Number(item.repairCost)]), 1) : 1;
   const monthLabel = (ym: string) => new Date(`${ym}-02T00:00:00Z`).toLocaleDateString(undefined, { month: 'short', year: '2-digit', timeZone: 'UTC' });
+  const totalUnits = overview ? overview.portfolio.totalUnits : 0;
+  const totalRepairs = overview ? overview.repairs.open + overview.repairs.inProgress + overview.repairs.completed + overview.repairs.cancelled : 0;
 
   return <AdminLayout active="dashboard" token={token} kicker="RMS / ADMINISTRATION" title="Control center.">
     {error && <p className="error" role="status">{error}</p>}
@@ -1608,22 +1663,27 @@ function AdminOverview({ token }: { token: string }) {
         <Metric label="Properties" value={String(overview.portfolio.totalProperties)} note={`${overview.portfolio.totalTenants} active tenants`} accent="green" />
         <Metric label="Units occupied" value={`${overview.portfolio.occupiedUnits} / ${overview.portfolio.totalUnits}`} note={`${overview.portfolio.availableUnits} vacant`} accent="blue" />
         <Metric label="Leases · bills · payments" value={String(overview.portfolio.totalLeases)} note={`${overview.portfolio.totalRentBills} bills · ${overview.portfolio.totalPayments} payments`} accent="green" />
-        <Metric label="This month income" value={money(overview.billing.thisMonthIncome)} note="Platform-wide" accent="green" />
-        <Metric label="Total outstanding" value={money(overview.billing.totalOutstanding)} note="Across open bills" accent="amber" />
+        <Metric label="Open repairs" value={String(overview.repairs.open + overview.repairs.inProgress)} note={`${overview.repairs.open} open · ${overview.repairs.inProgress} in progress`} accent="amber" />
       </section>
       <section className="dashboard-grid">
         <article className="dashboard-card trend-card">
           <div className="card-heading"><div><p className="card-kicker">Platform growth</p><h2>New accounts, last 6 months</h2></div></div>
           <div className="chart-legend"><span className="legend-chip"><i className="legend-dot" style={{ background: '#5e8b6e' }} />Users</span><span className="legend-chip"><i className="legend-dot" style={{ background: '#7b9cb0' }} />Properties</span><span className="legend-chip"><i className="legend-dot" style={{ background: '#d4a25d' }} />Tenants</span></div>
-          <div className="bars">{overview.growth.map((item) => <div className="bar-group" key={item.month}><div className="bar-track admin-triple-bar"><div className="bar" style={{ height: `${Math.max(3, item.newUsers / growthMax * 100)}%`, background: '#5e8b6e' }} title={`Users: ${item.newUsers}`} /><div className="bar" style={{ height: `${Math.max(3, item.newProperties / growthMax * 100)}%`, background: '#7b9cb0' }} title={`Properties: ${item.newProperties}`} /><div className="bar" style={{ height: `${Math.max(3, item.newTenants / growthMax * 100)}%`, background: '#d4a25d' }} title={`Tenants: ${item.newTenants}`} /></div><span>{monthLabel(item.month)}</span></div>)}</div>
+          <div className="bars">{overview.growth.map((item) => <div className="bar-group" key={item.month}><div className="bar-track admin-triple-bar"><div className="bar" style={{ height: `${Math.max(3, item.newUsers / growthMax * 100)}%`, background: '#5e8b6e' }} title={`${monthLabel(item.month)} — new users: ${item.newUsers}`} /><div className="bar" style={{ height: `${Math.max(3, item.newProperties / growthMax * 100)}%`, background: '#7b9cb0' }} title={`${monthLabel(item.month)} — new properties: ${item.newProperties}`} /><div className="bar" style={{ height: `${Math.max(3, item.newTenants / growthMax * 100)}%`, background: '#d4a25d' }} title={`${monthLabel(item.month)} — new tenants: ${item.newTenants}`} /></div><span>{monthLabel(item.month)}</span></div>)}</div>
+          <p className="chart-axis-note"><span>X-axis: Month</span><span>Y-axis: New accounts</span></p>
         </article>
-        <article className="dashboard-card trend-card">
-          <div className="card-heading"><div><p className="card-kicker">Revenue</p><h2>Income vs. repair cost</h2></div></div>
-          <div className="chart-legend"><span className="legend-chip"><i className="legend-dot" style={{ background: '#5e8b6e' }} />Income</span><span className="legend-chip"><i className="legend-dot" style={{ background: '#bd7c75' }} />Repairs</span></div>
-          <div className="bars">{overview.growth.map((item) => <div className="bar-group" key={item.month}><div className="bar-track"><div className="bar" style={{ height: `${Math.max(3, Number(item.income) / revenueMax * 100)}%` }} title={`Income: ${money(item.income)}`} /><div className="bar bar-repair" style={{ height: `${Number(item.repairCost) > 0 ? Math.max(3, Number(item.repairCost) / revenueMax * 100) : 0}%` }} title={`Repairs: ${money(item.repairCost)}`} /></div><span>{monthLabel(item.month)}</span></div>)}</div>
+        <article className="dashboard-card">
+          <div className="card-heading"><div><p className="card-kicker">Portfolio</p><h2>Occupancy</h2></div></div>
+          {totalUnits === 0 ? <p className="empty-state">No units yet.</p> : <PieChart segments={[{ label: 'Occupied', value: overview.portfolio.occupiedUnits, color: '#5e8b6e' }, { label: 'Vacant', value: overview.portfolio.availableUnits, color: '#c1d0c4' }]} centerLabel={String(overview.portfolio.occupiedUnits)} centerNote={`of ${totalUnits} units`} />}
         </article>
-        <article className="dashboard-card"><div className="card-heading"><div><p className="card-kicker">Portfolio</p><h2>Occupancy</h2></div></div><PieChart segments={[{ label: 'Occupied', value: overview.portfolio.occupiedUnits, color: '#5e8b6e' }, { label: 'Vacant', value: overview.portfolio.availableUnits, color: '#c1d0c4' }]} centerLabel={String(overview.portfolio.occupiedUnits)} centerNote={`of ${overview.portfolio.totalUnits} units`} /></article>
-        <article className="dashboard-card"><div className="card-heading"><div><p className="card-kicker">Maintenance</p><h2>Repairs</h2></div></div><PieChart segments={[{ label: 'Open', value: overview.repairs.open, color: '#a2473b' }, { label: 'In progress', value: overview.repairs.inProgress, color: '#d4a25d' }, { label: 'Completed', value: overview.repairs.completed, color: '#5e8b6e' }, { label: 'Cancelled', value: overview.repairs.cancelled, color: '#8a978f' }]} centerLabel={String(overview.repairs.open + overview.repairs.inProgress)} centerNote="active repairs" /></article>
+        <article className="dashboard-card">
+          <div className="card-heading"><div><p className="card-kicker">Maintenance</p><h2>Repairs</h2></div></div>
+          {totalRepairs === 0 ? <p className="empty-state">No repairs logged yet.</p> : <PieChart segments={[{ label: 'Open', value: overview.repairs.open, color: '#a2473b' }, { label: 'In progress', value: overview.repairs.inProgress, color: '#d4a25d' }, { label: 'Completed', value: overview.repairs.completed, color: '#5e8b6e' }, { label: 'Cancelled', value: overview.repairs.cancelled, color: '#8a978f' }]} centerLabel={String(overview.repairs.open + overview.repairs.inProgress)} centerNote="active repairs" />}
+        </article>
+        {overview.adminAttention.length > 0 && <article className="dashboard-card payments-card">
+          <div className="card-heading"><div><p className="card-kicker">Account health</p><h2>Admin attention</h2></div></div>
+          {overview.adminAttention.map((item) => <a className="payment-row needs-attention-row" href={item.href} key={item.key}><div><strong>{item.count} {item.label}</strong></div><span className="quiet-button export-button">View</span></a>)}
+        </article>}
         <article className="dashboard-card payments-card"><div className="card-heading"><div><p className="card-kicker">Security</p><h2>Recent activity</h2></div><a href="/admin/audit-logs">View all</a></div>{activity.length === 0 && <p className="empty-state">No recent activity.</p>}{activity.map((log) => <div className="payment-row" key={log.id}><div><strong>{log.action.replace(/_/g, ' ')}</strong><small>{log.actor?.fullName ?? 'Deleted user'} · {new Date(log.createdAt).toLocaleString()}</small></div></div>)}</article>
       </section>
     </>}
@@ -1644,7 +1704,8 @@ function AdminUsersPage({ token }: { token: string }) {
   const [roles, setRoles] = useState<Array<{ id: string; name: string }>>([]);
   const [message, setMessage] = useState('');
   const [search, setSearch] = useState('');
-  const [statusFilter, setStatusFilter] = useState('');
+  const [statusFilter, setStatusFilter] = useState(() => initialSearchParam('status'));
+  const [unverifiedOnly, setUnverifiedOnly] = useState(() => initialSearchParam('unverified') === '1');
   const [loading, setLoading] = useState(true);
   const [deletingUserId, setDeletingUserId] = useState<string | null>(null);
   const [resendingUserId, setResendingUserId] = useState<string | null>(null);
@@ -1654,6 +1715,7 @@ function AdminUsersPage({ token }: { token: string }) {
     const params = new URLSearchParams({ skip: String(skip), take: String(take) });
     if (search.trim()) params.set('q', search.trim());
     if (statusFilter) params.set('status', statusFilter);
+    if (unverifiedOnly) params.set('unverified', '1');
     return Promise.all([
       fetch(`${apiUrl}/admin/users?${params.toString()}`, { headers: { Authorization: `Bearer ${token}` } }),
       fetch(`${apiUrl}/admin/roles`, { headers: { Authorization: `Bearer ${token}` } }),
@@ -1664,7 +1726,7 @@ function AdminUsersPage({ token }: { token: string }) {
       .finally(() => setLoading(false));
   };
 
-  useEffect(() => { void load().catch((error: Error) => setMessage(error.message)); }, [token, skip, search, statusFilter]);
+  useEffect(() => { void load().catch((error: Error) => setMessage(error.message)); }, [token, skip, search, statusFilter, unverifiedOnly]);
 
   async function updateStatus(user: AdminUser) {
     setMessage('');
@@ -1733,6 +1795,7 @@ function AdminUsersPage({ token }: { token: string }) {
       <div className="admin-toolbar">
         <input type="search" placeholder="Search by name or email" value={search} onChange={(event) => { setSearch(event.target.value); setSkip(0); }} aria-label="Search users" />
         <select aria-label="Filter by status" value={statusFilter} onChange={(event) => { setStatusFilter(event.target.value); setSkip(0); }}><option value="">All statuses</option><option value="ACTIVE">Active</option><option value="SUSPENDED">Suspended</option><option value="DISABLED">Disabled</option></select>
+        <label className="admin-checkbox-filter"><input type="checkbox" checked={unverifiedOnly} onChange={(event) => { setUnverifiedOnly(event.target.checked); setSkip(0); }} /> Unverified only</label>
       </div>
       {!loading && users.length === 0 && <p className="empty-state">No users match this search.</p>}
       {users.map((user) => <div className="payment-row" key={user.id}>
@@ -2044,6 +2107,94 @@ function AdminTenantsPage({ token }: { token: string }) {
   </AdminLayout>;
 }
 
+type AdminLeaseRow = { id: string; monthlyRent: string; securityDeposit: string; startDate: string; endDate: string | null; status: string; owner: { id: string; fullName: string; email: string }; tenant: { id: string; name: string }; unit: string; property: string; propertyId: string };
+
+// Platform-wide Leases list: tenant, property/unit, rent, deposit, term,
+// and status — administrative visibility only, not linked from any
+// platform-health alert (lease management is the owner's responsibility).
+function AdminLeasesPage({ token }: { token: string }) {
+  const [items, setItems] = useState<AdminLeaseRow[]>([]);
+  const [total, setTotal] = useState(0);
+  const [skip, setSkip] = useState(0);
+  const take = 25;
+  const [q, setQ] = useState('');
+  const [status, setStatus] = useState('');
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    setLoading(true);
+    const params = new URLSearchParams({ skip: String(skip), take: String(take) });
+    if (q.trim()) params.set('q', q.trim());
+    if (status) params.set('status', status);
+    fetch(`${apiUrl}/admin/leases?${params.toString()}`, { headers: { Authorization: `Bearer ${token}` } }).then((response) => response.json()).then((body) => { setItems(body.items); setTotal(body.total); }).finally(() => setLoading(false));
+  }, [token, skip, q, status]);
+
+  const columns = [{ key: 'tenant', header: 'Tenant' }, { key: 'property', header: 'Property / unit' }, { key: 'owner', header: 'Owner' }, { key: 'term', header: 'Term' }, { key: 'status', header: 'Status' }, { key: 'rent', header: 'Monthly rent', align: 'right' as const }, { key: 'deposit', header: 'Deposit', align: 'right' as const }, { key: 'actions', header: 'Actions', align: 'right' as const }];
+  const rows = items.map((lease) => ({
+    tenant: lease.tenant.name,
+    property: <a href={`/admin/properties/${lease.propertyId}`}>{lease.property} / {lease.unit}</a>,
+    owner: <><a href={`/admin/users/${lease.owner.id}`}>{lease.owner.fullName}</a><br /><small>{lease.owner.email}</small></>,
+    term: <>{new Date(lease.startDate).toLocaleDateString()}{lease.endDate ? ` – ${new Date(lease.endDate).toLocaleDateString()}` : ' – ongoing'}</>,
+    status: <span className={`tenant-status ${lease.status.toLowerCase()}`}>{lease.status}</span>,
+    rent: money(lease.monthlyRent),
+    deposit: money(lease.securityDeposit),
+    actions: <a className="quiet-button export-button" href={`/admin/properties/${lease.propertyId}`}>View property</a>,
+  }));
+
+  return <AdminLayout active="leases" token={token} kicker="RMS / ADMINISTRATION" title="Leases.">
+    <article className="dashboard-card">
+      <div className="admin-toolbar">
+        <input type="search" placeholder="Search by owner, email, tenant, unit, or property" value={q} onChange={(event) => { setQ(event.target.value); setSkip(0); }} aria-label="Search leases" />
+        <select aria-label="Filter by status" value={status} onChange={(event) => { setStatus(event.target.value); setSkip(0); }}><option value="">All statuses</option><option value="ACTIVE">Active</option><option value="ENDED">Ended</option></select>
+      </div>
+      <AdminTable columns={columns} rows={rows} total={total} skip={skip} take={take} onPageChange={setSkip} loading={loading} emptyMessage="No leases match this filter." />
+    </article>
+  </AdminLayout>;
+}
+
+type AdminSettlementRow = { id: string; moveOutDate: string; unpaidDue: string; securityDeposit: string; refundAmount: string; payableAmount: string; result: string; settledAt: string | null; owner: { id: string; fullName: string; email: string }; tenant: { id: string; name: string }; unit: string; property: string; propertyId: string };
+
+// Platform-wide move-out Settlements list (spec section 22).
+function AdminSettlementsPage({ token }: { token: string }) {
+  const [items, setItems] = useState<AdminSettlementRow[]>([]);
+  const [total, setTotal] = useState(0);
+  const [skip, setSkip] = useState(0);
+  const take = 25;
+  const [q, setQ] = useState('');
+  const [result, setResult] = useState('');
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    setLoading(true);
+    const params = new URLSearchParams({ skip: String(skip), take: String(take) });
+    if (q.trim()) params.set('q', q.trim());
+    if (result) params.set('result', result);
+    fetch(`${apiUrl}/admin/settlements?${params.toString()}`, { headers: { Authorization: `Bearer ${token}` } }).then((response) => response.json()).then((body) => { setItems(body.items); setTotal(body.total); }).finally(() => setLoading(false));
+  }, [token, skip, q, result]);
+
+  const columns = [{ key: 'date', header: 'Move-out date' }, { key: 'tenant', header: 'Tenant' }, { key: 'property', header: 'Property / unit' }, { key: 'owner', header: 'Owner' }, { key: 'result', header: 'Result' }, { key: 'amount', header: 'Amount', align: 'right' as const }, { key: 'settled', header: 'Settled' }, { key: 'actions', header: 'Actions', align: 'right' as const }];
+  const rows = items.map((settlement) => ({
+    date: new Date(settlement.moveOutDate).toLocaleDateString(),
+    tenant: settlement.tenant.name,
+    property: <a href={`/admin/properties/${settlement.propertyId}`}>{settlement.property} / {settlement.unit}</a>,
+    owner: <><a href={`/admin/users/${settlement.owner.id}`}>{settlement.owner.fullName}</a><br /><small>{settlement.owner.email}</small></>,
+    result: <span className={`tenant-status ${settlement.result.toLowerCase()}`}>{settlement.result}</span>,
+    amount: settlement.result === 'REFUND' ? money(settlement.refundAmount) : settlement.result === 'PAYABLE' ? money(settlement.payableAmount) : '—',
+    settled: settlement.settledAt ? new Date(settlement.settledAt).toLocaleDateString() : <span className="subtle">Pending</span>,
+    actions: <a className="quiet-button export-button" href={`/admin/properties/${settlement.propertyId}`}>View property</a>,
+  }));
+
+  return <AdminLayout active="settlements" token={token} kicker="RMS / ADMINISTRATION" title="Settlements.">
+    <article className="dashboard-card">
+      <div className="admin-toolbar">
+        <input type="search" placeholder="Search by owner, email, tenant, unit, or property" value={q} onChange={(event) => { setQ(event.target.value); setSkip(0); }} aria-label="Search settlements" />
+        <select aria-label="Filter by result" value={result} onChange={(event) => { setResult(event.target.value); setSkip(0); }}><option value="">All results</option><option value="REFUND">Refund</option><option value="PAYABLE">Payable</option><option value="SETTLED">Settled</option></select>
+      </div>
+      <AdminTable columns={columns} rows={rows} total={total} skip={skip} take={take} onPageChange={setSkip} loading={loading} emptyMessage="No settlements match this filter." />
+    </article>
+  </AdminLayout>;
+}
+
 type AdminPaymentRow = { id: string; amount: string; paidOn: string; method: string; owner: { id: string; fullName: string; email: string }; tenantName: string; unit: string; property: string; propertyId: string };
 
 // Platform-wide Payments list (spec section 15): owner/property/method/date
@@ -2102,7 +2253,7 @@ function AdminRentBillsPage({ token }: { token: string }) {
   const [skip, setSkip] = useState(0);
   const take = 25;
   const [q, setQ] = useState('');
-  const [status, setStatus] = useState('');
+  const [status, setStatus] = useState(() => initialSearchParam('status'));
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -2145,7 +2296,7 @@ function AdminRepairsPage({ token }: { token: string }) {
   const [skip, setSkip] = useState(0);
   const take = 25;
   const [q, setQ] = useState('');
-  const [status, setStatus] = useState('');
+  const [status, setStatus] = useState(() => initialSearchParam('status'));
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -2199,12 +2350,31 @@ function AdminAuditLogsPage({ token }: { token: string }) {
   </AdminLayout>;
 }
 
-// System / Danger Zone (spec section 19): the platform-wide "clean
-// database" action, moved off the main admin dashboard and behind its own
-// route + explicit typed confirmation, same as before.
+// System Health + Danger Zone (spec sections 24 & 14): health only ever
+// reflects a real GET /health response (API reachability + DB
+// connectivity) and an actually-measured round-trip time — never invented
+// uptime/latency/percentage figures. The destructive "clean database"
+// action stays behind its own explicit typed confirmation.
 function AdminSystemPage({ token }: { token: string }) {
   const [message, setMessage] = useState('');
   const [cleaning, setCleaning] = useState(false);
+  const [health, setHealth] = useState<{ status: string; database: string; latencyMs: number; checkedAt: string } | null>(null);
+  const [healthError, setHealthError] = useState('');
+
+  function checkHealth() {
+    setHealthError('');
+    const startedAt = performance.now();
+    fetch(`${apiUrl}/health`)
+      .then(async (response) => {
+        const body = await response.json().catch(() => ({}));
+        const latencyMs = Math.round(performance.now() - startedAt);
+        if (!response.ok) { setHealth({ status: body.status ?? 'error', database: body.database ?? 'unavailable', latencyMs, checkedAt: new Date().toISOString() }); return; }
+        setHealth({ status: body.status ?? 'ok', database: body.database ?? 'connected', latencyMs, checkedAt: new Date().toISOString() });
+      })
+      .catch(() => setHealthError('Unable to reach the API.'));
+  }
+
+  useEffect(() => { checkHealth(); }, []);
 
   async function cleanDatabase() {
     const confirmation = window.prompt('This permanently deletes all properties, units, tenants, leases, bills, payments, repairs, and settlements for every owner. User accounts are kept. Type DELETE ALL DATA to confirm.');
@@ -2226,6 +2396,16 @@ function AdminSystemPage({ token }: { token: string }) {
 
   return <AdminLayout active="system" token={token} kicker="RMS / ADMINISTRATION" title="System.">
     {message && <p className="error" role="status">{message}</p>}
+    <article className="dashboard-card">
+      <div className="card-heading"><div><p className="card-kicker">System health</p><h2>API &amp; database</h2></div><button className="quiet-button" type="button" onClick={checkHealth}>Recheck</button></div>
+      {healthError && <p className="error">{healthError}</p>}
+      {health && <div className="metric-grid">
+        <Metric label="API" value={health.status === 'ok' ? 'Reachable' : 'Error'} note={`Checked ${new Date(health.checkedAt).toLocaleTimeString()}`} accent={health.status === 'ok' ? 'green' : 'amber'} />
+        <Metric label="Database" value={health.database === 'connected' ? 'Connected' : 'Unavailable'} note="Live query against Postgres" accent={health.database === 'connected' ? 'green' : 'amber'} />
+        <Metric label="Round-trip" value={`${health.latencyMs} ms`} note="Measured just now, this request only" accent="blue" />
+      </div>}
+      <p className="form-note">This reflects a real request made when this page loads — not a monitored uptime percentage. For historical uptime, use your infrastructure provider's monitoring.</p>
+    </article>
     <article className="dashboard-card danger-card">
       <div className="card-heading"><div><p className="card-kicker">Danger zone</p><h2>Clean database</h2></div></div>
       <p className="subtle">Permanently deletes properties, units, tenants, leases, bills, payments, repairs, and settlements for every owner. User accounts and roles are kept. This cannot be undone. For deleting a single property instead, use that property's own Danger Zone on its detail page.</p>
@@ -2295,24 +2475,34 @@ function PieChart({ segments, size = 128, thickness = 18, centerLabel, centerNot
   const circumference = 2 * Math.PI * radius;
   let offset = 0;
   return (
-    <div className="pie-chart">
-      <div className="pie-chart-svg-wrap">
-        <svg viewBox={`0 0 ${size} ${size}`} width={size} height={size} style={{ transform: 'rotate(-90deg)' }}>
-          {total <= 0
-            ? <circle cx={size / 2} cy={size / 2} r={radius} fill="none" stroke="#dce4dc" strokeWidth={thickness} />
-            : segments.filter((segment) => segment.value > 0).map((segment) => {
-              const dash = (segment.value / total) * circumference;
-              const circle = <circle key={segment.label} cx={size / 2} cy={size / 2} r={radius} fill="none" stroke={segment.color} strokeWidth={thickness} strokeDasharray={`${dash} ${circumference - dash}`} strokeDashoffset={-offset} strokeLinecap={segments.filter((s) => s.value > 0).length > 1 ? 'butt' : 'round'} />;
-              offset += dash;
-              return circle;
-            })}
-        </svg>
-        {(centerLabel || centerNote) && <div className="pie-chart-center"><strong>{centerLabel}</strong>{centerNote && <small>{centerNote}</small>}</div>}
+    <>
+      {/* The total/summary figure used to sit as absolutely-positioned text
+          inside the donut hole. On a narrow card, or with a longer note,
+          that text could run wide enough to spill over the colored ring
+          itself. It's now a plain caption line above the chart — fully
+          outside the SVG, so it can never sit on top of the chart. */}
+      {(centerLabel || centerNote) && <p className="pie-chart-caption"><strong>{centerLabel}</strong>{centerNote && <span>{centerNote}</span>}</p>}
+      <div className="pie-chart">
+        <div className="pie-chart-svg-wrap">
+          <svg viewBox={`0 0 ${size} ${size}`} width={size} height={size} style={{ transform: 'rotate(-90deg)' }}>
+            {total <= 0
+              ? <circle cx={size / 2} cy={size / 2} r={radius} fill="none" stroke="#dce4dc" strokeWidth={thickness} />
+              : segments.filter((segment) => segment.value > 0).map((segment) => {
+                const dash = (segment.value / total) * circumference;
+                const circle = <circle key={segment.label} cx={size / 2} cy={size / 2} r={radius} fill="none" stroke={segment.color} strokeWidth={thickness} strokeDasharray={`${dash} ${circumference - dash}`} strokeDashoffset={-offset} strokeLinecap={segments.filter((s) => s.value > 0).length > 1 ? 'butt' : 'round'} />;
+                offset += dash;
+                return circle;
+              })}
+          </svg>
+        </div>
+        {/* Legend always lives outside the SVG, in its own flex item — never
+            layered over the chart. `flex-wrap` on the parent lets it drop
+            to its own line on a narrow card instead of being squeezed. */}
+        <ul className="pie-chart-legend">
+          {segments.map((segment) => <li key={segment.label}><i style={{ background: segment.color }} /><span>{segment.label}</span><b>{total > 0 ? Math.round((Math.max(0, segment.value) / total) * 100) : 0}%</b></li>)}
+        </ul>
       </div>
-      <ul className="pie-chart-legend">
-        {segments.map((segment) => <li key={segment.label}><i style={{ background: segment.color }} />{segment.label}<b>{total > 0 ? Math.round((Math.max(0, segment.value) / total) * 100) : 0}%</b></li>)}
-      </ul>
-    </div>
+    </>
   );
 }
 

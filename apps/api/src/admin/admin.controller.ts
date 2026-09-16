@@ -20,21 +20,32 @@ export class AdminController {
   constructor(@Inject(PrismaService) private readonly prisma: PrismaService) {}
 
   // Platform-wide counts for the admin overview cards and charts: account
-  // health, portfolio size, this month's cash flow, repair pipeline, and a
-  // trailing 6-month platform-growth/revenue trend. Unlike the owner-facing
-  // dashboard, nothing here is scoped to a single ownerId.
+  // health, portfolio size, occupancy, repair pipeline, and a trailing
+  // 6-month platform-growth trend (new users/properties/tenants — never
+  // rent revenue). Unlike the owner-facing dashboard, nothing here is
+  // scoped to a single ownerId.
+  //
+  // Deliberately excludes rental-payment revenue/outstanding totals: those
+  // are owners' business finances, not RMS platform metrics. Also excludes
+  // owner-level operational alerts (unpaid rent, open repairs, leases
+  // ending soon) — those are the property owner/manager's responsibility,
+  // not the SaaS platform administrator's. See `adminAttention` below for
+  // the real, SYSTEM_ADMIN-scoped signals instead (account health only).
+  //
+  // Growth is computed with one grouped SQL aggregate per entity
+  // (date_trunc('month', ...) + COUNT) rather than fetching every new
+  // user/property/tenant row and bucketing it in JS — the query returns at
+  // most one row per month instead of one row per new record.
   @Get('overview')
   overview() {
     return this.prisma.withSystemAdmin(async (transaction) => {
       const now = new Date();
-      const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
-      const nextMonth = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1));
       const sixMonthsAgo = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 5, 1));
 
       const [
         userCounts, unverifiedUsers, unitCounts, totalTenants, totalProperties, totalOwners,
-        paidBills, unresolvedBills, repairCounts, totalLeases, totalRentBills, totalPayments,
-        newUsers, newProperties, newTenants, trendBills, trendRepairs,
+        repairCounts, totalLeases, totalRentBills, totalPayments,
+        userGrowthRows, propertyGrowthRows, tenantGrowthRows,
       ] = await Promise.all([
         transaction.user.groupBy({ by: ['status'], _count: { _all: true } }),
         transaction.user.count({ where: { emailVerifiedAt: null } }),
@@ -42,49 +53,47 @@ export class AdminController {
         transaction.tenant.count({ where: { deletedAt: null, status: 'ACTIVE' } }),
         transaction.property.count({ where: { deletedAt: null } }),
         transaction.user.count({ where: { userRoles: { some: { role: { name: 'OWNER_ADMIN' } } } } }),
-        transaction.rentBill.findMany({ where: { status: 'PAID', paymentDate: { gte: monthStart, lt: nextMonth } }, select: { houseRent: true, discount: true } }),
-        transaction.rentBill.findMany({ where: { status: { in: UNRESOLVED_BILL_STATUSES } }, select: { total: true, paidAmount: true } }),
         transaction.repair.groupBy({ by: ['status'], _count: { _all: true } }),
         transaction.leaseAgreement.count(),
         transaction.rentBill.count(),
         transaction.payment.count(),
-        transaction.user.findMany({ where: { createdAt: { gte: sixMonthsAgo } }, select: { createdAt: true } }),
-        transaction.property.findMany({ where: { createdAt: { gte: sixMonthsAgo }, deletedAt: null }, select: { createdAt: true } }),
-        transaction.tenant.findMany({ where: { createdAt: { gte: sixMonthsAgo }, deletedAt: null }, select: { createdAt: true } }),
-        transaction.rentBill.findMany({ where: { status: 'PAID', paymentDate: { gte: sixMonthsAgo, lt: nextMonth } }, select: { paymentDate: true, houseRent: true, discount: true } }),
-        transaction.repair.findMany({ where: { paidBy: 'OWNER', repairDate: { gte: sixMonthsAgo, lt: nextMonth } }, select: { repairDate: true, cost: true } }),
+        transaction.$queryRaw<Array<{ month: Date; count: bigint }>>`SELECT date_trunc('month', "createdAt") AS month, COUNT(*)::bigint AS count FROM "User" WHERE "createdAt" >= ${sixMonthsAgo} GROUP BY 1`,
+        transaction.$queryRaw<Array<{ month: Date; count: bigint }>>`SELECT date_trunc('month', "createdAt") AS month, COUNT(*)::bigint AS count FROM "Property" WHERE "createdAt" >= ${sixMonthsAgo} AND "deletedAt" IS NULL GROUP BY 1`,
+        transaction.$queryRaw<Array<{ month: Date; count: bigint }>>`SELECT date_trunc('month', "createdAt") AS month, COUNT(*)::bigint AS count FROM "Tenant" WHERE "createdAt" >= ${sixMonthsAgo} AND "deletedAt" IS NULL GROUP BY 1`,
       ]);
 
       const countUsers = (status: string) => userCounts.find((item) => item.status === status)?._count._all ?? 0;
       const countUnits = (status: string) => unitCounts.find((item) => item.status === status)?._count._all ?? 0;
       const countRepairs = (status: string) => repairCounts.find((item) => item.status === status)?._count._all ?? 0;
-      const income = paidBills.reduce((sum, bill) => sum.add(Prisma.Decimal.max(new Prisma.Decimal(0), bill.houseRent.sub(bill.discount))), new Prisma.Decimal(0));
-      const outstanding = unresolvedBills.reduce((sum, bill) => sum.add(bill.total.sub(bill.paidAmount)), new Prisma.Decimal(0));
+      const suspendedUsers = countUsers('SUSPENDED');
 
-      // Platform growth + revenue trend, last 6 months. Only-count/only-sum
-      // fields are fetched for the whole window in one query per entity,
-      // then bucketed in memory — cheaper than 6 separate monthly queries
-      // per entity and keeps this endpoint to a fixed, small number of
-      // round trips regardless of how many months are shown.
+      // Each row's `month` is a UTC-truncated timestamp; key it the same
+      // way the frontend keys months (YYYY-MM) to match rows to buckets.
+      const monthKey = (date: Date) => new Date(date).toISOString().slice(0, 7);
+      const bucket = (rows: Array<{ month: Date; count: bigint }>) => new Map(rows.map((row) => [monthKey(row.month), Number(row.count)]));
+      const userBuckets = bucket(userGrowthRows);
+      const propertyBuckets = bucket(propertyGrowthRows);
+      const tenantBuckets = bucket(tenantGrowthRows);
+
       const growth = Array.from({ length: 6 }, (_, index) => {
         const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 5 + index, 1));
-        const end = new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth() + 1, 1));
-        const inRange = (date: Date) => date >= start && date < end;
-        return {
-          month: start.toISOString().slice(0, 7),
-          newUsers: newUsers.filter((user) => inRange(user.createdAt)).length,
-          newProperties: newProperties.filter((property) => inRange(property.createdAt)).length,
-          newTenants: newTenants.filter((tenant) => inRange(tenant.createdAt)).length,
-          income: trendBills.filter((bill) => bill.paymentDate && inRange(bill.paymentDate)).reduce((sum, bill) => sum.add(Prisma.Decimal.max(new Prisma.Decimal(0), bill.houseRent.sub(bill.discount))), new Prisma.Decimal(0)),
-          repairCost: trendRepairs.filter((repair) => inRange(repair.repairDate)).reduce((sum, repair) => sum.add(repair.cost), new Prisma.Decimal(0)),
-        };
+        const key = start.toISOString().slice(0, 7);
+        return { month: key, newUsers: userBuckets.get(key) ?? 0, newProperties: propertyBuckets.get(key) ?? 0, newTenants: tenantBuckets.get(key) ?? 0 };
       });
 
+      // SYSTEM_ADMIN account-health signals only — never a property
+      // owner's day-to-day rental problems (unpaid rent, open repairs,
+      // leases ending soon belong on the owner's own dashboard, not here).
+      const adminAttention = [
+        { key: 'unverifiedUsers' as const, count: unverifiedUsers, label: 'unverified accounts', href: '/admin/users?unverified=1' },
+        { key: 'suspendedUsers' as const, count: suspendedUsers, label: 'suspended accounts', href: '/admin/users?status=SUSPENDED' },
+      ].filter((item) => item.count > 0);
+
       return {
-        users: { total: userCounts.reduce((sum, item) => sum + item._count._all, 0), active: countUsers('ACTIVE'), suspended: countUsers('SUSPENDED'), disabled: countUsers('DISABLED'), unverified: unverifiedUsers },
+        users: { total: userCounts.reduce((sum, item) => sum + item._count._all, 0), active: countUsers('ACTIVE'), suspended: suspendedUsers, disabled: countUsers('DISABLED'), unverified: unverifiedUsers },
         portfolio: { totalOwners, totalProperties, totalUnits: countUnits('AVAILABLE') + countUnits('OCCUPIED'), occupiedUnits: countUnits('OCCUPIED'), availableUnits: countUnits('AVAILABLE'), totalTenants, totalLeases, totalRentBills, totalPayments },
-        billing: { thisMonthIncome: income, totalOutstanding: outstanding },
         repairs: { open: countRepairs('OPEN'), inProgress: countRepairs('IN_PROGRESS'), completed: countRepairs('COMPLETED'), cancelled: countRepairs('CANCELLED') },
+        adminAttention,
         growth,
       };
     });
@@ -95,11 +104,12 @@ export class AdminController {
   // would mean loading every account into the browser at once, which is
   // exactly the failure mode flagged for large datasets.
   @Get('users')
-  users(@Req() request: Request & { query: PagingQuery & { q?: string; status?: string } }) {
+  users(@Req() request: Request & { query: PagingQuery & { q?: string; status?: string; unverified?: string } }) {
     const { skip, take } = this.paging(request.query);
     const q = (request.query.q ?? '').trim();
     const where: Prisma.UserWhereInput = {
       ...(request.query.status ? { status: request.query.status as Prisma.UserWhereInput['status'] } : {}),
+      ...(request.query.unverified === '1' ? { emailVerifiedAt: null } : {}),
       ...(q ? { OR: [{ fullName: { contains: q, mode: 'insensitive' as const } }, { email: { contains: q, mode: 'insensitive' as const } }] } : {}),
     };
 
@@ -557,6 +567,93 @@ export class AdminController {
         items: items.map((bill) => ({
           id: bill.id, billMonth: bill.billMonth, dueDate: bill.dueDate, total: bill.total, paidAmount: bill.paidAmount, status: bill.status,
           owner: bill.owner, tenantName: bill.lease.tenant.name, unit: bill.unit.unitNo, property: bill.unit.property.name, propertyId: bill.unit.property.id,
+        })),
+      };
+    });
+  }
+
+  // Platform-wide lease list: tenant, property/unit, rent, deposit, term,
+  // status. Lease term/renewal management is the property owner's
+  // responsibility, not SYSTEM_ADMIN's — this endpoint is administrative
+  // visibility only, and is not linked from any platform-health alert.
+  @Get('leases')
+  leasesList(@Req() request: Request & { query: PagingQuery & { q?: string; status?: string; ownerId?: string; propertyId?: string } }) {
+    const { skip, take } = this.paging(request.query);
+    const { status, ownerId, propertyId } = request.query;
+    const q = (request.query.q ?? '').trim();
+    const where: Prisma.LeaseAgreementWhereInput = {
+      ...(ownerId ? { ownerId } : {}),
+      ...(status ? { status: status as Prisma.LeaseAgreementWhereInput['status'] } : {}),
+      ...(propertyId ? { unit: { propertyId } } : {}),
+      ...(q ? { OR: [
+        { owner: { fullName: { contains: q, mode: 'insensitive' as const } } },
+        { owner: { email: { contains: q, mode: 'insensitive' as const } } },
+        { tenant: { name: { contains: q, mode: 'insensitive' as const } } },
+        { unit: { unitNo: { contains: q, mode: 'insensitive' as const } } },
+        { unit: { property: { name: { contains: q, mode: 'insensitive' as const } } } },
+      ] } : {}),
+    };
+
+    return this.prisma.withSystemAdmin(async (transaction) => {
+      const [items, total] = await Promise.all([
+        transaction.leaseAgreement.findMany({
+          where,
+          include: { owner: { select: { id: true, fullName: true, email: true } }, tenant: { select: { id: true, name: true } }, unit: { include: { property: { select: { id: true, name: true } } } } },
+          orderBy: { startDate: 'desc' },
+          skip,
+          take,
+        }),
+        transaction.leaseAgreement.count({ where }),
+      ]);
+
+      return {
+        total,
+        items: items.map((lease) => ({
+          id: lease.id, monthlyRent: lease.monthlyRent, securityDeposit: lease.securityDeposit, startDate: lease.startDate, endDate: lease.endDate, status: lease.status,
+          owner: lease.owner, tenant: lease.tenant, unit: lease.unit.unitNo, property: lease.unit.property.name, propertyId: lease.unit.property.id,
+        })),
+      };
+    });
+  }
+
+  // Platform-wide move-out settlement list: tenant, property/unit, refund
+  // or payable amount, result, date.
+  @Get('settlements')
+  settlementsList(@Req() request: Request & { query: PagingQuery & { q?: string; result?: string; ownerId?: string; propertyId?: string } }) {
+    const { skip, take } = this.paging(request.query);
+    const { result, ownerId, propertyId } = request.query;
+    const q = (request.query.q ?? '').trim();
+    const where: Prisma.MoveOutSettlementWhereInput = {
+      ...(ownerId ? { ownerId } : {}),
+      ...(result ? { result: result as Prisma.MoveOutSettlementWhereInput['result'] } : {}),
+      ...(propertyId ? { unit: { propertyId } } : {}),
+      ...(q ? { OR: [
+        { owner: { fullName: { contains: q, mode: 'insensitive' as const } } },
+        { owner: { email: { contains: q, mode: 'insensitive' as const } } },
+        { tenant: { name: { contains: q, mode: 'insensitive' as const } } },
+        { unit: { unitNo: { contains: q, mode: 'insensitive' as const } } },
+        { unit: { property: { name: { contains: q, mode: 'insensitive' as const } } } },
+      ] } : {}),
+    };
+
+    return this.prisma.withSystemAdmin(async (transaction) => {
+      const [items, total] = await Promise.all([
+        transaction.moveOutSettlement.findMany({
+          where,
+          include: { owner: { select: { id: true, fullName: true, email: true } }, tenant: { select: { id: true, name: true } }, unit: { include: { property: { select: { id: true, name: true } } } } },
+          orderBy: { moveOutDate: 'desc' },
+          skip,
+          take,
+        }),
+        transaction.moveOutSettlement.count({ where }),
+      ]);
+
+      return {
+        total,
+        items: items.map((settlement) => ({
+          id: settlement.id, moveOutDate: settlement.moveOutDate, unpaidDue: settlement.unpaidDue, securityDeposit: settlement.securityDeposit,
+          refundAmount: settlement.refundAmount, payableAmount: settlement.payableAmount, result: settlement.result, settledAt: settlement.settledAt,
+          owner: settlement.owner, tenant: settlement.tenant, unit: settlement.unit.unitNo, property: settlement.unit.property.name, propertyId: settlement.unit.property.id,
         })),
       };
     });
